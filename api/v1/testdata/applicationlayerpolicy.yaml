@@ -1,0 +1,26 @@
+kind: ApplicationLayerPolicy
+apiVersion: operator.tigera.io/v1
+metadata:
+  name: app-rules-for-my-web-apps
+  namespace: default
+spec:
+  labelSelector: app == "web"  # optional, if not specified, the policy applies to all pods in this namespace
+  webApplicationFirewall:
+  - rulesetName: tigera-secure # name of the configMap containing the ruleset that's in the namespace calico-system 
+    directives: # directive overrides appplied to the base ruleset
+    - SecRuleRemoveById 981176
+    - SecRuleEngine On
+  logCollection:
+    logIntervalSeconds: 10
+    logRequestsPerInterval: -1
+  policyRego: |-
+    package envoy.http.public
+
+    import rego.v1
+
+    default allow := false
+
+    allow if {
+      input.attributes.request.http.method == "GET"
+      input.attributes.request.http.path == "/"
+    }

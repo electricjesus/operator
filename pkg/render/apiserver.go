@@ -15,6 +15,7 @@
 package render
 
 import (
+	_ "embed"
 	"fmt"
 	"strings"
 
@@ -2063,35 +2064,16 @@ func (c *apiServerComponent) uiSettingsPassthruClusterRolebinding() *rbacv1.Clus
 	}
 }
 
+var (
+	//go:embed default-audit-policy.yaml
+	defaultAuditPolicy string
+)
+
 // auditPolicyConfigMap returns a configmap with contents to configure audit logging for
 // projectcalico.org/v3 APIs.
 //
 // Calico Enterprise only
 func (c *apiServerComponent) auditPolicyConfigMap() *corev1.ConfigMap {
-	const defaultAuditPolicy = `apiVersion: audit.k8s.io/v1
-kind: Policy
-rules:
-- level: RequestResponse
-  omitStages:
-  - RequestReceived
-  verbs:
-  - create
-  - patch
-  - update
-  - delete
-  resources:
-  - group: projectcalico.org
-    resources:
-    - globalnetworkpolicies
-    - networkpolicies
-    - stagedglobalnetworkpolicies
-    - stagednetworkpolicies
-    - stagedkubernetesnetworkpolicies
-    - globalnetworksets
-    - networksets
-    - tiers
-    - hostendpoints`
-
 	return &corev1.ConfigMap{
 		TypeMeta: metav1.TypeMeta{Kind: "ConfigMap", APIVersion: "v1"},
 		ObjectMeta: metav1.ObjectMeta{
