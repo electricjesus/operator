@@ -382,6 +382,12 @@ func (pr *gatewayAPIImplementationComponent) ResolveImages(is *operatorv1.ImageS
 			return err
 		}
 	}
+
+	pr.logCollectorImage, err = components.GetReference(components.ComponentL7Collector, reg, path, prefix, is)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -570,6 +576,7 @@ func (pr *gatewayAPIImplementationComponent) logCollectorDeploymentAndService() 
 	return []client.Object{
 		// The log collector deployment.
 		&appsv1.Deployment{
+			TypeMeta: metav1.TypeMeta{Kind: "Deployment", APIVersion: "v1"},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tigera-l7-log-collector",
 				Namespace: EnvoyGatewayNamespace,
@@ -598,6 +605,7 @@ func (pr *gatewayAPIImplementationComponent) logCollectorDeploymentAndService() 
 		},
 		// The log collector service.
 		&corev1.Service{
+			TypeMeta: metav1.TypeMeta{Kind: "Service", APIVersion: "v1"},
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "tigera-l7-log-collector-service",
 				Namespace: EnvoyGatewayNamespace,
