@@ -471,6 +471,10 @@ func (pr *gatewayAPIImplementationComponent) l7CollectorContainerConfigByType(co
 		// proxy sidecar l7 collector container needs to read files and have access to envoy access log in that pod
 		envVars = append(envVars, []corev1.EnvVar{
 			{
+				Name:  "READ_FILES",
+				Value: "true",
+			},
+			{
 				Name:  "ENVOY_ACCESS_LOG_PATH",
 				Value: EnvoyAccessLogsFilePath,
 			},
@@ -483,6 +487,7 @@ func (pr *gatewayAPIImplementationComponent) l7CollectorContainerConfigByType(co
 		}...)
 	case L7CollectorContainerGatewayCtrlrSidecarType:
 		// controller sidecar l7 collector container only needs to serve opentelemetry ingest endpoints
+		// doesn't need to read files.
 		envVars = append(envVars, []corev1.EnvVar{
 			{
 				Name:  "LISTEN_ADDRESS",
