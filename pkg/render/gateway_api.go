@@ -822,44 +822,7 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 				SecurityContext: securitycontext.NewRootContext(true),
 			}
 			// need to make changes to the envoy container to mount the socket
-			l7LogCollector := corev1.Container{
-				Name:  "l7-log-collector",
-				Image: pr.L7LogCollectorImage,
-				Env: []corev1.EnvVar{
-					{
-						Name:  "READ_FILES",
-						Value: "true",
-					},
-					{
-						Name:  "FELIX_DIAL_TARGET",
-						Value: "/var/run/felix/nodeagent/socket",
-					},
-					{
-						Name:  "LISTEN_ADDRESS",
-						Value: ":8080",
-					},
-					{
-						Name:  "LISTEN_NETWORK",
-						Value: "tcp",
-					},
-					{
-						Name:  "ENVOY_ACCESS_LOG_PATH",
-						Value: "/access_logs/access.log",
-					},
-				},
-				RestartPolicy: ptr.ToPtr(corev1.ContainerRestartPolicyAlways),
-				VolumeMounts: []corev1.VolumeMount{
-					{
-						Name:      "access-logs",
-						MountPath: "/access_logs",
-					},
-					{
-						Name:      "felix-sync",
-						MountPath: "/var/run/felix",
-					},
-				},
-				SecurityContext: securitycontext.NewRootContext(true),
-			}
+			l7LogCollector := pr.l7CollectorContainer(L7CollectorContainerGatewayProxySidecarType)
 
 			hasWAFHTTPFilter := false
 			hasL7LogCollector := false
