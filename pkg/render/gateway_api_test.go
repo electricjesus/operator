@@ -851,17 +851,17 @@ var _ = Describe("Gateway API rendering tests", func() {
 			},
 		}))
 
-		Expect(envoyDeployment.InitContainers[1].Name).To(Equal("l7-log-collector"))
+		Expect(envoyDeployment.InitContainers[1].Name).To(Equal(L7CollectorContainerName))
 		Expect(*envoyDeployment.InitContainers[1].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
 		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(HaveLen(2))
 		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
 			{
-				Name:      "access-logs",
-				MountPath: "/access_logs",
+				Name:      EnvoyAccessLogsVolumeName,
+				MountPath: EnvoyAccessLogsVolumeMountPath,
 			},
 			{
-				Name:      "felix-sync",
-				MountPath: "/var/run/felix",
+				Name:      FelixSyncVolumeName,
+				MountPath: FelixHostPathDirectory,
 			},
 		}))
 
@@ -875,8 +875,8 @@ var _ = Describe("Gateway API rendering tests", func() {
 			MountPath: "/var/run/waf-http-filter",
 		}))
 		Expect(envoyDeployment.Container.VolumeMounts).To(ContainElement(corev1.VolumeMount{
-			Name:      "access-logs",
-			MountPath: "/access_logs",
+			Name:      EnvoyAccessLogsVolumeName,
+			MountPath: EnvoyAccessLogsVolumeMountPath,
 		}))
 
 		Expect(proxy.Spec.Telemetry.AccessLog.Settings).To(Equal(AccessLogSettings))
@@ -914,7 +914,7 @@ var _ = Describe("Gateway API rendering tests", func() {
 							InitContainers: []corev1.Container{
 								{
 									Name:          "some-other-sidecar",
-									RestartPolicy: ptr.ToPtr[corev1.ContainerRestartPolicy](corev1.ContainerRestartPolicyAlways),
+									RestartPolicy: ptr.ToPtr(corev1.ContainerRestartPolicyAlways),
 									VolumeMounts: []corev1.VolumeMount{
 										{
 											Name:      "some-other-volume",
@@ -1024,5 +1024,22 @@ var _ = Describe("Gateway API rendering tests", func() {
 		Expect(envoyDeployment.Pod.Volumes[3].EmptyDir).ToNot(BeNil())
 
 		Expect(proxy.Spec.Telemetry.AccessLog.Settings).To(Equal(AccessLogSettings))
+	})
+	It("should include the sidecar initContainer in the Envoy Gateway controller deployment", func() {
+		installation := &operatorv1.InstallationSpec{}
+		gatewayAPI := &operatorv1.GatewayAPI{
+			Spec: operatorv1.GatewayAPISpec{},
+		}
+		gatewayComp := GatewayAPIImplementationComponent(&GatewayAPIImplementationConfig{
+			Installation: installation,
+			GatewayAPI:   gatewayAPI,
+		})
+		objsToCreate, _ := gatewayComp.Objects()
+
+		deploy, err := rtest.GetResourceOfType[*appsv1.Deployment](objsToCreate, "envoy-gateway", "tigera-gateway")
+		Expect(err).NotTo(HaveOccurred())
+		Expect(deploy.Spec.Template.Spec.InitContainers).To(ContainElement(And(
+			HaveField("Name", L7CollectorContainerName),
+		)))
 	})
 })

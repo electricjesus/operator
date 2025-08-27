@@ -83,7 +83,23 @@ const (
 	EnvoyGatewayConfigKey               = "envoy-gateway.yaml"
 	EnvoyGatewayDeploymentContainerName = "envoy-gateway"
 	EnvoyGatewayJobContainerName        = "envoy-gateway-certgen"
-	wafFilterName                       = "waf-http-filter"
+	EnvoyAccessLogsVolumeName           = "access-logs"
+	EnvoyAccessLogsVolumeMountPath      = "/access_logs"
+	EnvoyAccessLogsFilePath             = "/access_logs/access.log"
+	WAFFilterName                       = "waf-http-filter"
+	FelixSyncVolumeName                 = "felix-sync"
+	FelixHostPathDirectory              = "/var/run/felix"
+	FelixHostPathListenSocket           = "/var/run/felix/nodeagent/socket"
+	L7CollectorContainerName            = "l7-log-collector"
+	L7CollectorContainerListenAddr      = ":8080"
+	L7CollectorContainerListenNetwork   = "tcp"
+)
+
+type L7CollectorContainerType int8
+
+const (
+	L7CollectorContainerGatewayProxySidecarType L7CollectorContainerType = iota
+	L7CollectorContainerGatewayCtrlrSidecarType
 )
 
 var (
@@ -433,6 +449,68 @@ func (pr *gatewayAPIImplementationComponent) ResolveImages(is *operatorv1.ImageS
 	return nil
 }
 
+func (pr *gatewayAPIImplementationComponent) l7CollectorContainerConfigByType(containerType L7CollectorContainerType) ([]corev1.EnvVar, []corev1.VolumeMount) {
+	// common env vars and volume mounts:
+	// 	both gateway proxy and controller sidecar l7 collector containers
+	// 	need to be connected to Felix
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "FELIX_DIAL_TARGET",
+			Value: FelixHostPathListenSocket,
+		},
+	}
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      FelixSyncVolumeName,
+			MountPath: FelixHostPathDirectory,
+		},
+	}
+
+	switch containerType {
+	case L7CollectorContainerGatewayProxySidecarType:
+		// proxy sidecar l7 collector container needs to read files and have access to envoy access log in that pod
+		envVars = append(envVars, []corev1.EnvVar{
+			{
+				Name:  "ENVOY_ACCESS_LOG_PATH",
+				Value: EnvoyAccessLogsFilePath,
+			},
+		}...)
+		volumeMounts = append(volumeMounts, []corev1.VolumeMount{
+			{
+				Name:      EnvoyAccessLogsVolumeName,
+				MountPath: EnvoyAccessLogsVolumeMountPath,
+			},
+		}...)
+	case L7CollectorContainerGatewayCtrlrSidecarType:
+		// controller sidecar l7 collector container only needs to serve opentelemetry ingest endpoints
+		envVars = append(envVars, []corev1.EnvVar{
+			{
+				Name:  "LISTEN_ADDRESS",
+				Value: L7CollectorContainerListenAddr,
+			},
+			{
+				Name:  "LISTEN_NETWORK",
+				Value: L7CollectorContainerListenNetwork,
+			},
+		}...)
+	}
+
+	return envVars, volumeMounts
+}
+
+// Function to generate the l7Collector container
+func (pr *gatewayAPIImplementationComponent) l7CollectorContainer(containerType L7CollectorContainerType) corev1.Container {
+	envVars, volumeMounts := pr.l7CollectorContainerConfigByType(containerType)
+	return corev1.Container{
+		Name:            L7CollectorContainerName,
+		Image:           pr.L7LogCollectorImage,
+		Env:             envVars,
+		RestartPolicy:   ptr.ToPtr(corev1.ContainerRestartPolicyAlways),
+		VolumeMounts:    volumeMounts,
+		SecurityContext: securitycontext.NewRootContext(true),
+	}
+}
+
 func (pr *gatewayAPIImplementationComponent) SupportedOSType() rmeta.OSType {
 	return rmeta.OSTypeLinux
 }
@@ -559,6 +637,12 @@ func (pr *gatewayAPIImplementationComponent) Objects() ([]client.Object, []clien
 
 	// Apply customizations from the GatewayControllerDeployment field of the GatewayAPI CR.
 	rcomp.ApplyDeploymentOverrides(controllerDeployment, pr.cfg.GatewayAPI.Spec.GatewayControllerDeployment)
+
+	// Add the sidecar as an initContainer to the deployment.
+	controllerDeployment.Spec.Template.Spec.InitContainers = append(
+		controllerDeployment.Spec.Template.Spec.InitContainers,
+		pr.l7CollectorContainer(L7CollectorContainerGatewayCtrlrSidecarType),
+	)
 
 	objs = append(objs, controllerDeployment)
 
@@ -710,7 +794,7 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 		if envoyProxy.Spec.Provider.Kubernetes.EnvoyDeployment != nil {
 			// Add or update the Init Container to the deployment
 			wafHTTPFilter := corev1.Container{
-				Name:  wafFilterName,
+				Name:  WAFFilterName,
 				Image: pr.wafHTTPFilterImage,
 				Args: []string{
 					"-logFileDirectory",
@@ -720,10 +804,10 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 					"-socketPath",
 					"/var/run/waf-http-filter/extproc.sock",
 				},
-				RestartPolicy: ptr.ToPtr[corev1.ContainerRestartPolicy](corev1.ContainerRestartPolicyAlways),
+				RestartPolicy: ptr.ToPtr(corev1.ContainerRestartPolicyAlways),
 				VolumeMounts: []corev1.VolumeMount{
 					{
-						Name:      wafFilterName,
+						Name:      WAFFilterName,
 						MountPath: "/var/run/waf-http-filter",
 					},
 					{
@@ -763,7 +847,7 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 						Value: "/access_logs/access.log",
 					},
 				},
-				RestartPolicy: ptr.ToPtr[corev1.ContainerRestartPolicy](corev1.ContainerRestartPolicyAlways),
+				RestartPolicy: ptr.ToPtr(corev1.ContainerRestartPolicyAlways),
 				VolumeMounts: []corev1.VolumeMount{
 					{
 						Name:      "access-logs",
@@ -811,7 +895,7 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 			// Add or update Container volume mount
 			wafSocketVolumeMount := corev1.VolumeMount{
 
-				Name:      wafFilterName,
+				Name:      WAFFilterName,
 				MountPath: "/var/run/waf-http-filter",
 			}
 
@@ -860,7 +944,7 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 				VolumeSource: corev1.VolumeSource{
 					EmptyDir: &corev1.EmptyDirVolumeSource{},
 				},
-				Name: wafFilterName,
+				Name: WAFFilterName,
 			}
 			AccessLogsVolume := corev1.Volume{
 				VolumeSource: corev1.VolumeSource{
