@@ -149,3 +149,50 @@ type ApplicationLayerList struct {
 func init() {
 	SchemeBuilder.Register(&ApplicationLayer{}, &ApplicationLayerList{})
 }
+
+// +kubebuilder:object:root=true
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Namespaced
+// ApplicationLayerPolicy is a schema for defining an application-level policy for application traffic on a namespace.
+type ApplicationLayerPolicy struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   ApplicationLayerPolicySpec   `json:"spec,omitempty"`
+	Status ApplicationLayerPolicyStatus `json:"status,omitempty"`
+}
+
+// ApplicationLayerPolicySpec defines the desired state of ApplicationLayerPolicy
+type ApplicationLayerPolicySpec struct {
+	// LabelSelector is used to select the pods to which this policy applies.
+	LabelSelector          metav1.LabelSelector              `json:"labelSelector"`
+	WebApplicationFirewall *ApplicationLayerFirewall         `json:"webApplicationFirewall,omitempty"`
+	LogCollection          *LogCollectionSpec                `json:"logCollection,omitempty"`
+	PolicyRego             *ApplicationLayerPolicyConfigRego `json:"policyRego,omitempty"`
+}
+
+type ApplicationLayerFirewall struct {
+	RulesetName *string  `json:"rulesetName,omitempty"`
+	Directives  []string `json:"directive,omitempty"`
+}
+
+type ApplicationLayerPolicyConfigRego struct {
+	// Rego is the OPA policy to enforce.
+	Rego *string `json:"rego"`
+}
+
+// ApplicationLayerPolicyStatus defines the observed state of ApplicationLayerPolicy
+type ApplicationLayerPolicyStatus struct {
+	// State provides user-readable status.
+	State string `json:"state,omitempty"`
+	// Conditions represents the latest observed set of conditions for the component. A component may be one or more of
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// ApplicationLayerPolicyList contains a list of ApplicationLayerPolicy
+type ApplicationLayerPolicyList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []ApplicationLayerPolicy `json:"items"`
+}

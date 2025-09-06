@@ -1,0 +1,35 @@
+apiVersion: audit.k8s.io/v1
+kind: Policy
+rules:
+- level: RequestResponse
+  omitStages:
+  - RequestReceived
+  verbs:
+  - create
+  - patch
+  - update
+  - delete
+  resources:
+  - group: operator.tigera.io
+    resources:
+	- applicationlayerpolicies
+- level: RequestResponse
+  omitStages:
+  - RequestReceived
+  verbs:
+  - create
+  - patch
+  - update
+  - delete
+  resources:
+  - group: projectcalico.org
+    resources:
+    - globalnetworkpolicies
+    - networkpolicies
+    - stagedglobalnetworkpolicies
+    - stagednetworkpolicies
+    - stagedkubernetesnetworkpolicies
+    - globalnetworksets
+    - networksets
+    - tiers
+    - hostendpoints
