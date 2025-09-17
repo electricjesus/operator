@@ -19,6 +19,7 @@ import (
 	"fmt"
 
 	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -284,8 +285,41 @@ func updateWhiskerWithDefaults(instance *operatorv1.Whisker) {
 	}
 }
 
+// getWhiskerPods returns a list of all pods that match the Whisker deployment label selector.
+// This is used to ensure all Whisker pods are terminated before removing the finalizer.
+func (r *Reconciler) getWhiskerPods(ctx context.Context) (*corev1.PodList, error) {
+	podList := &corev1.PodList{}
+
+	// Use the same label selector that the Whisker deployment uses
+	labelSelector := client.MatchingLabels{
+		"app.kubernetes.io/name": whisker.WhiskerDeploymentName,
+	}
+
+	err := r.cli.List(ctx, podList, labelSelector, client.InNamespace(common.CalicoNamespace))
+	return podList, err
+}
+
 func (r *Reconciler) maintainFinalizer(ctx context.Context, whiskerCr client.Object) error {
 	// These objects require graceful termination before the CNI plugin is torn down.
 	whiskerDeployment := &v1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: common.CalicoNamespace, Name: whisker.WhiskerDeploymentName}}
-	return utils.MaintainInstallationFinalizer(ctx, r.cli, whiskerCr, render.WhiskerFinalizer, whiskerDeployment)
+
+	// Also check for any remaining pods from the Whisker deployment, as they can linger
+	// even after the deployment is deleted due to finalizers or other conditions.
+	// This is critical because these pods keep the CNI permissions active.
+	podList, err := r.getWhiskerPods(ctx)
+	if err != nil {
+		log.Error(err, "Failed to list Whisker pods")
+		return err
+	}
+
+	// Convert the pod list to a slice of client.Object for the finalizer utility
+	var secondaryResources []client.Object
+	secondaryResources = append(secondaryResources, whiskerDeployment)
+
+	for i := range podList.Items {
+		pod := &podList.Items[i]
+		secondaryResources = append(secondaryResources, pod)
+	}
+
+	return utils.MaintainInstallationFinalizer(ctx, r.cli, whiskerCr, render.WhiskerFinalizer, secondaryResources...)
 }
