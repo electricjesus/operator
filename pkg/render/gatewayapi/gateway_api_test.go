@@ -1031,7 +1031,7 @@ value:
 		Expect(proxyMountPaths).To(ContainElement("/etc/pki/tls/certs"))
 	})
 
-	It("should not deploy waf-http-filter or l7-log-collector for open-source", func() {
+	It("should not deploy l7-log-collector for open-source", func() {
 		installation := &operatorv1.InstallationSpec{
 			Variant: operatorv1.Calico,
 		}
@@ -1058,7 +1058,7 @@ value:
 		Expect(envoyDeployment.Container.VolumeMounts).To(BeNil())
 	})
 
-	It("should deploy waf-http-filter for Enterprise", func() {
+	It("should deploy l7-log-collector for Enterprise", func() {
 		installation := &operatorv1.InstallationSpec{
 			Variant: operatorv1.CalicoEnterprise,
 		}
@@ -1082,31 +1082,20 @@ value:
 		envoyDeployment := proxy.Spec.Provider.Kubernetes.EnvoyDeployment
 		Expect(envoyDeployment).ToNot(BeNil())
 
+		// waf-http-filter sidecar deprecated 2026-05-12 (PMREQ-384). Only l7-log-collector
+		// remains as the init container; its volumes feed envoy access logs to felix.
 		Expect(envoyDeployment.Pod).ToNot(BeNil())
-		Expect(envoyDeployment.Pod.Volumes).To(HaveLen(4))
-		Expect(envoyDeployment.Pod.Volumes[0].Name).To(Equal("var-log-calico"))
-		Expect(envoyDeployment.Pod.Volumes[0].HostPath.Path).To(Equal("/var/log/calico"))
-		Expect(envoyDeployment.Pod.Volumes[1].Name).To(Equal("waf-http-filter"))
-		Expect(envoyDeployment.Pod.Volumes[1].EmptyDir).ToNot(BeNil())
+		Expect(envoyDeployment.Pod.Volumes).To(HaveLen(2))
+		Expect(envoyDeployment.Pod.Volumes[0].Name).To(Equal("access-logs"))
+		Expect(envoyDeployment.Pod.Volumes[0].EmptyDir).ToNot(BeNil())
+		Expect(envoyDeployment.Pod.Volumes[1].Name).To(Equal("felix-sync"))
+		Expect(envoyDeployment.Pod.Volumes[1].CSI.Driver).To(Equal("csi.tigera.io"))
 
-		Expect(envoyDeployment.InitContainers[0].Name).To(Equal("waf-http-filter"))
+		Expect(envoyDeployment.InitContainers).To(HaveLen(1))
+		Expect(envoyDeployment.InitContainers[0].Name).To(Equal("l7-log-collector"))
 		Expect(*envoyDeployment.InitContainers[0].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
 		Expect(envoyDeployment.InitContainers[0].VolumeMounts).To(HaveLen(2))
 		Expect(envoyDeployment.InitContainers[0].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
-			{
-				Name:      "waf-http-filter",
-				MountPath: "/var/run/waf-http-filter",
-			},
-			{
-				Name:      "var-log-calico",
-				MountPath: "/var/log/calico",
-			},
-		}))
-
-		Expect(envoyDeployment.InitContainers[1].Name).To(Equal("l7-log-collector"))
-		Expect(*envoyDeployment.InitContainers[1].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
-		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(HaveLen(2))
-		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
 			{
 				Name:      "access-logs",
 				MountPath: "/access_logs",
@@ -1123,15 +1112,8 @@ value:
 			Value: "/access_logs/envoy.log",
 		}))
 
-		// logger gateway name and namespace are set from the k8s downward api pod metadata.
-		Expect(envoyDeployment.InitContainers[0].Env).To(ContainElements(GatewayNameEnvVar, GatewayNamespaceEnvVar))
-
 		Expect(envoyDeployment.Container).ToNot(BeNil())
-		Expect(envoyDeployment.Container.VolumeMounts).To(HaveLen(2))
-		Expect(envoyDeployment.Container.VolumeMounts).To(ContainElement(corev1.VolumeMount{
-			Name:      "waf-http-filter",
-			MountPath: "/var/run/waf-http-filter",
-		}))
+		Expect(envoyDeployment.Container.VolumeMounts).To(HaveLen(1))
 		Expect(envoyDeployment.Container.VolumeMounts).To(ContainElement(corev1.VolumeMount{
 			Name:      "access-logs",
 			MountPath: "/access_logs",
@@ -1152,7 +1134,7 @@ value:
 		Expect(proxy.Spec.ExtraArgs).To(Equal([]string{"--log-path", "/access_logs/envoy.log"}))
 	})
 
-	It("should deploy waf-http-filter for Enterprise when using a custom proxy", func() {
+	It("should deploy l7-log-collector for Enterprise when using a custom proxy", func() {
 		installation := &operatorv1.InstallationSpec{
 			Variant: operatorv1.CalicoEnterprise,
 		}
@@ -1240,26 +1222,15 @@ value:
 		envoyDeployment := proxy.Spec.Provider.Kubernetes.EnvoyDeployment
 		Expect(envoyDeployment).ToNot(BeNil())
 
-		Expect(envoyDeployment.InitContainers).To(HaveLen(3))
+		// waf-http-filter sidecar deprecated 2026-05-12 (PMREQ-384). User-provided
+		// init containers remain alongside the l7-log-collector we inject.
+		Expect(envoyDeployment.InitContainers).To(HaveLen(2))
 		Expect(envoyDeployment.InitContainers[0].Name).To(Equal("some-other-sidecar"))
-		Expect(envoyDeployment.InitContainers[1].Name).To(Equal("waf-http-filter"))
+
+		Expect(envoyDeployment.InitContainers[1].Name).To(Equal("l7-log-collector"))
 		Expect(*envoyDeployment.InitContainers[1].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
 		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(HaveLen(2))
 		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
-			{
-				Name:      "waf-http-filter",
-				MountPath: "/var/run/waf-http-filter",
-			},
-			{
-				Name:      "var-log-calico",
-				MountPath: "/var/log/calico",
-			},
-		}))
-
-		Expect(envoyDeployment.InitContainers[2].Name).To(Equal("l7-log-collector"))
-		Expect(*envoyDeployment.InitContainers[2].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
-		Expect(envoyDeployment.InitContainers[2].VolumeMounts).To(HaveLen(2))
-		Expect(envoyDeployment.InitContainers[2].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
 			{
 				Name:      "access-logs",
 				MountPath: "/access_logs",
@@ -1280,26 +1251,19 @@ value:
 				Name:      "some-other-volume",
 				MountPath: "/test",
 			}, corev1.VolumeMount{
-				Name:      "waf-http-filter",
-				MountPath: "/var/run/waf-http-filter",
-			}, corev1.VolumeMount{
 				Name:      "access-logs",
 				MountPath: "/access_logs",
 			},
 		))
 
 		Expect(envoyDeployment.Pod).ToNot(BeNil())
-		Expect(envoyDeployment.Pod.Volumes).To(HaveLen(5))
+		Expect(envoyDeployment.Pod.Volumes).To(HaveLen(3))
 		Expect(envoyDeployment.Pod.Volumes[0].Name).To(Equal("some-other-volume"))
 		Expect(envoyDeployment.Pod.Volumes[0].EmptyDir).ToNot(BeNil())
-		Expect(envoyDeployment.Pod.Volumes[1].Name).To(Equal("var-log-calico"))
-		Expect(envoyDeployment.Pod.Volumes[1].HostPath.Path).To(Equal("/var/log/calico"))
-		Expect(envoyDeployment.Pod.Volumes[2].Name).To(Equal("waf-http-filter"))
-		Expect(envoyDeployment.Pod.Volumes[2].EmptyDir).ToNot(BeNil())
-		Expect(envoyDeployment.Pod.Volumes[3].Name).To(Equal("access-logs"))
-		Expect(envoyDeployment.Pod.Volumes[3].EmptyDir).ToNot(BeNil())
-		Expect(envoyDeployment.Pod.Volumes[4].Name).To(Equal("felix-sync"))
-		Expect(envoyDeployment.Pod.Volumes[4].CSI.Driver).To(Equal("csi.tigera.io"))
+		Expect(envoyDeployment.Pod.Volumes[1].Name).To(Equal("access-logs"))
+		Expect(envoyDeployment.Pod.Volumes[1].EmptyDir).ToNot(BeNil())
+		Expect(envoyDeployment.Pod.Volumes[2].Name).To(Equal("felix-sync"))
+		Expect(envoyDeployment.Pod.Volumes[2].CSI.Driver).To(Equal("csi.tigera.io"))
 		Expect(proxy.Spec.Telemetry.AccessLog.Settings).To(Equal(AccessLogSettings))
 	})
 
@@ -1326,7 +1290,7 @@ value:
 
 		envoyDeployment := proxy.Spec.Provider.Kubernetes.EnvoyDeployment
 		Expect(envoyDeployment).ToNot(BeNil())
-		Expect(envoyDeployment.InitContainers).To(HaveLen(2))
+		Expect(envoyDeployment.InitContainers).To(HaveLen(1))
 
 		// Find the l7-log-collector init container
 		var l7LogCollector *corev1.Container
@@ -1522,19 +1486,16 @@ value:
 
 		objsToCreate, _ := gatewayComp.Objects()
 
-		// Verify cluster-scoped ClusterRole exists with license key + token review rules.
+		// Verify cluster-scoped ClusterRole exists with the licensekeys rule. The
+		// tokenreviews rule was dropped when the waf-http-filter sidecar was
+		// deprecated; license enforcement moved to the reconciler.
 		csRole, err := rtest.GetResourceOfType[*rbacv1.ClusterRole](objsToCreate, "waf-http-filter-cluster-scoped", "")
 		Expect(err).NotTo(HaveOccurred())
-		Expect(csRole.Rules).To(HaveLen(2))
+		Expect(csRole.Rules).To(HaveLen(1))
 		Expect(csRole.Rules).To(ContainElement(rbacv1.PolicyRule{
 			APIGroups: []string{"crd.projectcalico.org", "projectcalico.org"},
 			Resources: []string{"licensekeys"},
 			Verbs:     []string{"get", "watch"},
-		}))
-		Expect(csRole.Rules).To(ContainElement(rbacv1.PolicyRule{
-			APIGroups: []string{"authentication.k8s.io"},
-			Resources: []string{"tokenreviews"},
-			Verbs:     []string{"create"},
 		}))
 
 		// Verify gateway-resources ClusterRole exists with route rules only.
