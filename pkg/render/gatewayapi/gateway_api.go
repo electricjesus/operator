@@ -117,10 +117,14 @@ const (
 	// "AuditLog:" lines (emitted via proxywasm.LogInfo) in Envoy's application log.
 	wafLogComponentWasm = envoyapi.ProxyLogComponent("wasm")
 
-	// wafAuditLogPath is the file (on the var-log-calico HostPath volume) that Envoy's
-	// application log is redirected to via --log-path, and that the l7-log-collector
-	// tails for Coraza "AuditLog:" lines (WAF_AUDIT_LOG_PATH).
-	wafAuditLogPath = "/var/log/calico/gateway/envoy.log"
+	// wafAuditLogPath is the file that Envoy's application log is redirected to via
+	// --log-path, and that the l7-log-collector tails for Coraza "AuditLog:" lines
+	// (WAF_AUDIT_LOG_PATH). It lives on the "access-logs" emptyDir that is already
+	// mounted in both the envoy container (which writes it) and the l7-log-collector
+	// (which reads it) - so no extra volume or mount is needed. Envoy will not create
+	// parent directories for --log-path, so this is a file directly under the existing
+	// /access_logs mount, not a new subdirectory.
+	wafAuditLogPath = "/access_logs/envoy.log"
 )
 
 var (
@@ -979,12 +983,12 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className, ns stri
 			envoyProxy.Spec.Logging.Level[wafLogComponentWasm] = envoyapi.LogLevelInfo
 
 			// Redirect Envoy's application log (where the wasm filter's "AuditLog:" lines
-			// land) to a file on the var-log-calico HostPath volume so the
-			// l7-log-collector can tail it. EnvoyProxy has no native log-path field, and a
-			// Patch on the envoy container's args would replace Envoy Gateway's generated
-			// args, so use ExtraArgs, which EG appends to the proxy command line. func-e
-			// parses each element as a single token, so the flag and value are separate
-			// elements. A user-supplied --log-path is left untouched.
+			// land) to a file on the "access-logs" emptyDir so the l7-log-collector can
+			// tail it (the collector already mounts that volume). EnvoyProxy has no native
+			// log-path field, and a Patch on the envoy container's args would replace Envoy
+			// Gateway's generated args, so use ExtraArgs, which EG appends to the proxy
+			// command line. func-e parses each element as a single token, so the flag and
+			// value are separate elements. A user-supplied --log-path is left untouched.
 			if !slices.Contains(envoyProxy.Spec.ExtraArgs, "--log-path") {
 				envoyProxy.Spec.ExtraArgs = append(envoyProxy.Spec.ExtraArgs, "--log-path", wafAuditLogPath)
 			}
@@ -1055,10 +1059,6 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className, ns stri
 					{
 						Name:      "felix-sync",
 						MountPath: "/var/run/felix",
-					},
-					{
-						Name:      "var-log-calico",
-						MountPath: "/var/log/calico",
 					},
 				},
 				SecurityContext: securitycontext.NewRootContext(true),
