@@ -1132,6 +1132,12 @@ value:
 		}))
 
 		Expect(proxy.Spec.Telemetry.AccessLog.Settings).To(Equal(AccessLogSettings))
+
+		// WAF audit capture: the wasm component logs at info so Coraza "AuditLog:" lines
+		// reach Envoy's application log, while everything else stays at warn so the
+		// redirected log file is approximately just the audit lines.
+		Expect(proxy.Spec.Logging.Level).To(HaveKeyWithValue(envoyapi.LogComponentDefault, envoyapi.LogLevelWarn))
+		Expect(proxy.Spec.Logging.Level).To(HaveKeyWithValue(envoyapi.ProxyLogComponent("wasm"), envoyapi.LogLevelInfo))
 	})
 
 	It("should deploy waf-http-filter for Enterprise when using a custom proxy", func() {

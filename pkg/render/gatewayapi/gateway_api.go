@@ -108,6 +108,13 @@ const (
 	EnvoyGatewayDeploymentContainerName = "envoy-gateway"
 	EnvoyGatewayJobContainerName        = "envoy-gateway-certgen"
 	wafFilterName                       = "waf-http-filter"
+
+	// wafLogComponentWasm is the Envoy "wasm" logger component. Envoy Gateway does not
+	// define a const for it (its enum omits wasm), but EnvoyProxy.Spec.Logging.Level
+	// passes arbitrary component keys through to Envoy's --component-log-level arg, and
+	// Envoy recognises "wasm". Setting it to info surfaces the Coraza WASM filter's
+	// "AuditLog:" lines (emitted via proxywasm.LogInfo) in Envoy's application log.
+	wafLogComponentWasm = envoyapi.ProxyLogComponent("wasm")
 )
 
 var (
@@ -952,6 +959,19 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className, ns stri
 		// The WAF HTTP filter is not supported when the envoy proxy is deployed as a DaemonSet
 		// as there is no support for init containers in a DaemonSet.
 		if envoyProxy.Spec.Provider.Kubernetes.EnvoyDeployment != nil {
+			// Tune Envoy log levels for WAF audit capture: the wasm component logs at
+			// info so the Coraza filter's "AuditLog:" lines reach Envoy's application
+			// log, while the default stays at warn to keep the redirected log file
+			// approximately just the audit lines. A user-supplied default level (e.g.
+			// for debugging) is preserved.
+			if envoyProxy.Spec.Logging.Level == nil {
+				envoyProxy.Spec.Logging.Level = map[envoyapi.ProxyLogComponent]envoyapi.LogLevel{}
+			}
+			if _, ok := envoyProxy.Spec.Logging.Level[envoyapi.LogComponentDefault]; !ok {
+				envoyProxy.Spec.Logging.Level[envoyapi.LogComponentDefault] = envoyapi.LogLevelWarn
+			}
+			envoyProxy.Spec.Logging.Level[wafLogComponentWasm] = envoyapi.LogLevelInfo
+
 			// Add or update the Init Container to the deployment
 			wafHTTPFilter := corev1.Container{
 				Name:    wafFilterName,
