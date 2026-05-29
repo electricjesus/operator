@@ -1138,6 +1138,12 @@ value:
 		// redirected log file is approximately just the audit lines.
 		Expect(proxy.Spec.Logging.Level).To(HaveKeyWithValue(envoyapi.LogComponentDefault, envoyapi.LogLevelWarn))
 		Expect(proxy.Spec.Logging.Level).To(HaveKeyWithValue(envoyapi.ProxyLogComponent("wasm"), envoyapi.LogLevelInfo))
+
+		// WAF audit capture: Envoy's application log is redirected to a file on the
+		// var-log-calico HostPath volume via --log-path (appended through ExtraArgs,
+		// which Envoy Gateway adds to the proxy args verbatim - each token a separate
+		// element). The l7-log-collector tails this file.
+		Expect(proxy.Spec.ExtraArgs).To(Equal([]string{"--log-path", "/var/log/calico/gateway/envoy.log"}))
 	})
 
 	It("should deploy waf-http-filter for Enterprise when using a custom proxy", func() {

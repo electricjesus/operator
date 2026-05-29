@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 
@@ -115,6 +116,11 @@ const (
 	// Envoy recognises "wasm". Setting it to info surfaces the Coraza WASM filter's
 	// "AuditLog:" lines (emitted via proxywasm.LogInfo) in Envoy's application log.
 	wafLogComponentWasm = envoyapi.ProxyLogComponent("wasm")
+
+	// wafAuditLogPath is the file (on the var-log-calico HostPath volume) that Envoy's
+	// application log is redirected to via --log-path, and that the l7-log-collector
+	// tails for Coraza "AuditLog:" lines (WAF_AUDIT_LOG_PATH).
+	wafAuditLogPath = "/var/log/calico/gateway/envoy.log"
 )
 
 var (
@@ -971,6 +977,17 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className, ns stri
 				envoyProxy.Spec.Logging.Level[envoyapi.LogComponentDefault] = envoyapi.LogLevelWarn
 			}
 			envoyProxy.Spec.Logging.Level[wafLogComponentWasm] = envoyapi.LogLevelInfo
+
+			// Redirect Envoy's application log (where the wasm filter's "AuditLog:" lines
+			// land) to a file on the var-log-calico HostPath volume so the
+			// l7-log-collector can tail it. EnvoyProxy has no native log-path field, and a
+			// Patch on the envoy container's args would replace Envoy Gateway's generated
+			// args, so use ExtraArgs, which EG appends to the proxy command line. func-e
+			// parses each element as a single token, so the flag and value are separate
+			// elements. A user-supplied --log-path is left untouched.
+			if !slices.Contains(envoyProxy.Spec.ExtraArgs, "--log-path") {
+				envoyProxy.Spec.ExtraArgs = append(envoyProxy.Spec.ExtraArgs, "--log-path", wafAuditLogPath)
+			}
 
 			// Add or update the Init Container to the deployment
 			wafHTTPFilter := corev1.Container{
