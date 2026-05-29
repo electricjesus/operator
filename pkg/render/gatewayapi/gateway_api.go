@@ -1036,6 +1036,12 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className, ns stri
 						Name:  "ENVOY_ACCESS_LOG_PATH",
 						Value: "/access_logs/access.log",
 					},
+					// WAF audit capture: file the collector tails for the wasm filter's
+					// Coraza "AuditLog:" lines (Envoy's app log, redirected via --log-path).
+					{
+						Name:  "WAF_AUDIT_LOG_PATH",
+						Value: wafAuditLogPath,
+					},
 					// Owning Gateway info from pod labels (set by EnvoyProxy)
 					OwningGatewayNameEnvVar,
 					OwningGatewayNamespaceEnvVar,
@@ -1049,6 +1055,10 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className, ns stri
 					{
 						Name:      "felix-sync",
 						MountPath: "/var/run/felix",
+					},
+					{
+						Name:      "var-log-calico",
+						MountPath: "/var/log/calico",
 					},
 				},
 				SecurityContext: securitycontext.NewRootContext(true),

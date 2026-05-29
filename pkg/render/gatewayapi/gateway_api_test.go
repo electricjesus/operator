@@ -1105,7 +1105,7 @@ value:
 
 		Expect(envoyDeployment.InitContainers[1].Name).To(Equal("l7-log-collector"))
 		Expect(*envoyDeployment.InitContainers[1].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
-		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(HaveLen(2))
+		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(HaveLen(3))
 		Expect(envoyDeployment.InitContainers[1].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
 			{
 				Name:      "access-logs",
@@ -1115,6 +1115,15 @@ value:
 				Name:      "felix-sync",
 				MountPath: "/var/run/felix",
 			},
+			{
+				Name:      "var-log-calico",
+				MountPath: "/var/log/calico",
+			},
+		}))
+		// WAF audit capture: the l7-log-collector tails the redirected Envoy app log.
+		Expect(envoyDeployment.InitContainers[1].Env).To(ContainElement(corev1.EnvVar{
+			Name:  "WAF_AUDIT_LOG_PATH",
+			Value: "/var/log/calico/gateway/envoy.log",
 		}))
 
 		// logger gateway name and namespace are set from the k8s downward api pod metadata.
@@ -1252,7 +1261,7 @@ value:
 
 		Expect(envoyDeployment.InitContainers[2].Name).To(Equal("l7-log-collector"))
 		Expect(*envoyDeployment.InitContainers[2].RestartPolicy).To(Equal(corev1.ContainerRestartPolicyAlways))
-		Expect(envoyDeployment.InitContainers[2].VolumeMounts).To(HaveLen(2))
+		Expect(envoyDeployment.InitContainers[2].VolumeMounts).To(HaveLen(3))
 		Expect(envoyDeployment.InitContainers[2].VolumeMounts).To(ContainElements([]corev1.VolumeMount{
 			{
 				Name:      "access-logs",
@@ -1262,6 +1271,14 @@ value:
 				Name:      "felix-sync",
 				MountPath: "/var/run/felix",
 			},
+			{
+				Name:      "var-log-calico",
+				MountPath: "/var/log/calico",
+			},
+		}))
+		Expect(envoyDeployment.InitContainers[2].Env).To(ContainElement(corev1.EnvVar{
+			Name:  "WAF_AUDIT_LOG_PATH",
+			Value: "/var/log/calico/gateway/envoy.log",
 		}))
 
 		Expect(envoyDeployment.Container).ToNot(BeNil())
