@@ -16,6 +16,7 @@ package monitor_test
 
 import (
 	"fmt"
+	"regexp"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -839,6 +840,25 @@ var _ = Describe("monitor rendering tests", func() {
 
 			Expect(len(zeroedPolicy.Spec.Egress)).To(Equal(len(baselinePolicy.Spec.Egress) - 1))
 		})
+
+		It("Should render the gateway WAF GlobalNetworkPolicy so Prometheus can scrape proxy metrics", func() {
+			component := monitor.MonitorPolicy(cfg)
+			resourcesToCreate, _ := component.Objects()
+			gnp, ok := rtest.GetResource(resourcesToCreate, monitor.GatewayWAFMetricsPolicyName, "", "projectcalico.org", "v3", "GlobalNetworkPolicy").(*v3.GlobalNetworkPolicy)
+			Expect(ok).To(BeTrue())
+			Expect(gnp.Spec.Tier).To(Equal("calico-system"))
+			// Selects EG data-plane proxy pods (not the controller).
+			Expect(gnp.Spec.Selector).To(ContainSubstring("envoy-gateway"))
+			Expect(gnp.Spec.Selector).To(ContainSubstring("proxy"))
+			Expect(gnp.Spec.Ingress).To(HaveLen(2))
+			// Allow :19001 from Prometheus...
+			Expect(gnp.Spec.Ingress[0].Action).To(Equal(v3.Allow))
+			Expect(gnp.Spec.Ingress[0].Source.Selector).To(Equal("k8s-app == 'tigera-prometheus'"))
+			Expect(gnp.Spec.Ingress[0].Destination.Ports).To(HaveLen(1))
+			Expect(gnp.Spec.Ingress[0].Destination.Ports[0].String()).To(Equal("19001"))
+			// ...and Pass everything else so the proxy data plane isn't dropped.
+			Expect(gnp.Spec.Ingress[1].Action).To(Equal(v3.Pass))
+		})
 	})
 
 	It("Should render external prometheus resources with service monitor", func() {
@@ -983,6 +1003,132 @@ var _ = Describe("monitor rendering tests", func() {
 		Expect(servicemonitorObj.Spec.Endpoints[2].Port).To(Equal("felix-metrics-port"))
 		Expect(servicemonitorObj.Spec.Endpoints[2].ScrapeTimeout).To(BeEquivalentTo("5s"))
 		Expect(*servicemonitorObj.Spec.Endpoints[2].RelabelConfigs[0].Replacement).To(Equal("http"))
+	})
+
+	It("Should render the gateway WAF PodMonitor with decision relabeling", func() {
+		component := monitor.Monitor(cfg)
+		Expect(component.ResolveImages(nil)).NotTo(HaveOccurred())
+		toCreate, _ := component.Objects()
+
+		pm, ok := rtest.GetResource(toCreate, monitor.GatewayWAFMetrics, common.TigeraPrometheusNamespace, "monitoring.coreos.com", "v1", monitoringv1.PodMonitorsKind).(*monitoringv1.PodMonitor)
+		Expect(ok).To(BeTrue())
+
+		// Discover proxies across all namespaces (EG runs each Gateway's proxy
+		// in the Gateway's own namespace) by the EG-managed owning-gateway label.
+		Expect(pm.Spec.NamespaceSelector.Any).To(BeTrue())
+		Expect(pm.Spec.Selector.MatchExpressions).To(ConsistOf([]metav1.LabelSelectorRequirement{
+			{
+				Key:      "gateway.envoyproxy.io/owning-gateway-name",
+				Operator: metav1.LabelSelectorOpExists,
+			},
+		}))
+
+		Expect(pm.Spec.PodMetricsEndpoints).To(HaveLen(1))
+		ep := pm.Spec.PodMetricsEndpoints[0]
+		Expect(ep.PortNumber).To(Equal(ptr.To(int32(monitor.EnvoyProxyMetricsPort))))
+		Expect(ep.Path).To(Equal("/stats/prometheus"))
+		Expect(ep.Scheme).To(Equal(ptr.To(monitoringv1.SchemeHTTP)))
+
+		// Gateway attribution comes from the proxy pod's EG labels via target
+		// relabelings (no wasm involvement).
+		gw := map[string]monitoringv1.RelabelConfig{}
+		for _, r := range ep.RelabelConfigs {
+			gw[r.TargetLabel] = r
+		}
+		Expect(gw["gateway"].SourceLabels).To(ConsistOf(monitoringv1.LabelName("__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name")))
+		Expect(gw["gateway_namespace"].SourceLabels).To(ConsistOf(monitoringv1.LabelName("__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_namespace")))
+
+		// Prometheus anchors relabel regexes (^...$); mirror that here.
+		matches := func(regex, name string) bool {
+			return regexp.MustCompile("^" + regex + "$").MatchString(name)
+		}
+		capture := func(regex, name string) string {
+			m := regexp.MustCompile("^" + regex + "$").FindStringSubmatch(name)
+			if len(m) < 2 {
+				return ""
+			}
+			return m[1]
+		}
+		rl := ep.MetricRelabelConfigs
+		firstByTarget := func(target string) monitoringv1.RelabelConfig {
+			for _, r := range rl {
+				if r.TargetLabel == target {
+					return r
+				}
+			}
+			Fail("no relabel rule writes " + target)
+			return monitoringv1.RelabelConfig{}
+		}
+
+		// Live-confirmed scraped name forms (EG v1.7.2 / Envoy v1.37, unprefixed;
+		// dots/'=' mangled to '_'). wbFlip exercises the order-agnostic match
+		// (the wasm assembles the identifier/owner suffix from a Go map).
+		const (
+			wb       = "waf_filter_tx_would_block_identifier_shop_relaxed_owner_shop"
+			wbFlip   = "waf_filter_tx_would_block_owner_shop_identifier_shop_relaxed"
+			intr     = "waf_filter_tx_interruptions_ruleid_949110_phase_http_response_headers_identifier_shop_strict_owner_shop"
+			totalCtr = "waf_filter_tx_total"
+		)
+
+		// keep retains the bare WAF counters EG actually emits.
+		Expect(rl[0].Action).To(Equal("keep"))
+		Expect(matches(rl[0].Regex, totalCtr)).To(BeTrue())
+
+		// policy/namespace extraction is order-agnostic and covers BOTH the
+		// would_block and interruptions counters.
+		pol := firstByTarget("policy")
+		Expect(capture(pol.Regex, wb)).To(Equal("shop_relaxed"))
+		Expect(capture(pol.Regex, wbFlip)).To(Equal("shop_relaxed"))
+		Expect(capture(pol.Regex, intr)).To(Equal("shop_strict"))
+		ns := firstByTarget("namespace")
+		Expect(capture(ns.Regex, wb)).To(Equal("shop"))
+		Expect(capture(ns.Regex, wbFlip)).To(Equal("shop"))
+		Expect(capture(ns.Regex, intr)).To(Equal("shop"))
+
+		// rule_id/phase come only from the real-block (interruptions) counter.
+		Expect(capture(firstByTarget("rule_id").Regex, intr)).To(Equal("949110"))
+		Expect(capture(firstByTarget("phase").Regex, intr)).To(Equal("http_response_headers"))
+		Expect(matches(firstByTarget("rule_id").Regex, wb)).To(BeFalse())
+
+		// decision: DetectionOnly would_block vs real block, by source counter.
+		var sawWouldBlock, sawBlocked bool
+		for _, r := range rl {
+			if r.TargetLabel != "decision" {
+				continue
+			}
+			switch *r.Replacement {
+			case "would_block":
+				Expect(matches(r.Regex, wb)).To(BeTrue())
+				Expect(matches(r.Regex, intr)).To(BeFalse())
+				sawWouldBlock = true
+			case "blocked":
+				Expect(matches(r.Regex, intr)).To(BeTrue())
+				Expect(matches(r.Regex, wb)).To(BeFalse())
+				sawBlocked = true
+			}
+		}
+		Expect(sawWouldBlock).To(BeTrue())
+		Expect(sawBlocked).To(BeTrue())
+
+		// __name__ collapse: both decision counters → one series; total → its own.
+		var sawDecisions, sawTx bool
+		for _, r := range rl {
+			if r.TargetLabel != "__name__" {
+				continue
+			}
+			switch *r.Replacement {
+			case "tigera_waf_decisions_total":
+				Expect(matches(r.Regex, wb)).To(BeTrue())
+				Expect(matches(r.Regex, intr)).To(BeTrue())
+				Expect(matches(r.Regex, totalCtr)).To(BeFalse())
+				sawDecisions = true
+			case "tigera_waf_transactions_total":
+				Expect(matches(r.Regex, totalCtr)).To(BeTrue())
+				sawTx = true
+			}
+		}
+		Expect(sawDecisions).To(BeTrue())
+		Expect(sawTx).To(BeTrue())
 	})
 
 	It("Should move ServiceMonitors to toDelete when LicenseExpired is true", func() {
@@ -1191,6 +1337,7 @@ func expectedBaseResources() []client.Object {
 		&monitoringv1.ServiceMonitor{ObjectMeta: metav1.ObjectMeta{Name: "fluentd-metrics", Namespace: common.TigeraPrometheusNamespace}, TypeMeta: metav1.TypeMeta{Kind: "ServiceMonitor", APIVersion: "monitoring.coreos.com/v1"}},
 		&monitoringv1.ServiceMonitor{ObjectMeta: metav1.ObjectMeta{Name: "calico-api", Namespace: common.TigeraPrometheusNamespace}, TypeMeta: metav1.TypeMeta{Kind: "ServiceMonitor", APIVersion: "monitoring.coreos.com/v1"}},
 		&monitoringv1.ServiceMonitor{ObjectMeta: metav1.ObjectMeta{Name: "calico-kube-controllers-metrics", Namespace: common.TigeraPrometheusNamespace}, TypeMeta: metav1.TypeMeta{Kind: "ServiceMonitor", APIVersion: "monitoring.coreos.com/v1"}},
+		&monitoringv1.PodMonitor{ObjectMeta: metav1.ObjectMeta{Name: monitor.GatewayWAFMetrics, Namespace: common.TigeraPrometheusNamespace}, TypeMeta: metav1.TypeMeta{Kind: "PodMonitor", APIVersion: "monitoring.coreos.com/v1"}},
 		&rbacv1.RoleBinding{ObjectMeta: metav1.ObjectMeta{Name: render.TigeraOperatorSecrets, Namespace: common.TigeraPrometheusNamespace}, TypeMeta: metav1.TypeMeta{Kind: "RoleBinding", APIVersion: "rbac.authorization.k8s.io/v1"}},
 	}
 }

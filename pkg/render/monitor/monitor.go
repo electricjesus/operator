@@ -86,6 +86,21 @@ const (
 	ElasticsearchMetrics = "elasticsearch-metrics"
 	FluentdMetrics       = "fluentd-metrics"
 
+	// GatewayWAFMetrics is the PodMonitor that scrapes the Coraza WASM WAF
+	// counters (incl. the EV-6650 would_block counter) off each Gateway's
+	// Envoy proxy pods.
+	GatewayWAFMetrics = "tigera-gateway-waf-metrics"
+	// EnvoyProxyMetricsPort is the port Envoy Gateway exposes the proxy
+	// Prometheus stats endpoint on (see gatewayapi netpol: "19001: metrics").
+	EnvoyProxyMetricsPort = 19001
+	// GatewayWAFMetricsPolicyName is the GlobalNetworkPolicy that lets Tigera
+	// Prometheus reach the Envoy Gateway proxy metrics port (the proxies run in
+	// arbitrary Gateway namespaces, hence a global policy).
+	GatewayWAFMetricsPolicyName = networkpolicy.CalicoComponentPolicyPrefix + "gateway-waf-metrics"
+	// EnvoyGatewayProxySelector matches the EG data-plane proxy pods (not the
+	// envoy-gateway controller, which carries k8s-app == 'envoy-gateway').
+	EnvoyGatewayProxySelector = "app.kubernetes.io/managed-by == 'envoy-gateway' && app.kubernetes.io/component == 'proxy'"
+
 	calicoNodePrometheusServiceName       = "calico-node-prometheus"
 	tigeraPrometheusServiceHealthEndpoint = "/health"
 
@@ -122,6 +137,7 @@ func MonitorPolicy(cfg *Config) render.Component {
 		calicoSystemPrometheusAPIPolicy(cfg),
 		calicoSystemPrometheusOperatorPolicy(cfg),
 		networkpolicy.CalicoSystemDefaultDeny(common.TigeraPrometheusNamespace),
+		gatewayWAFMetricsPolicy(),
 	}
 	toDelete := []client.Object{
 		// allow-tigera Tier was renamed to calico-system
@@ -287,6 +303,16 @@ func (mc *monitorComponent) Objects() ([]client.Object, []client.Object) {
 		toDelete = append(toDelete, serviceMonitors...)
 	} else {
 		toCreate = append(toCreate, serviceMonitors...)
+	}
+
+	// Gateway WAF metrics are a Calico Enterprise feature, so gate the PodMonitor
+	// on the license like the ServiceMonitors above. It selects only EG-managed
+	// proxy pods, so it is harmless (matches nothing) when no Gateway is deployed.
+	gatewayWAFMonitor := mc.podMonitorGatewayWAF()
+	if mc.cfg.LicenseExpired {
+		toDelete = append(toDelete, gatewayWAFMonitor)
+	} else {
+		toCreate = append(toCreate, gatewayWAFMonitor)
 	}
 
 	if mc.cfg.KeyValidatorConfig != nil {
@@ -1075,6 +1101,185 @@ func (mc *monitorComponent) serviceMonitorCalicoNode() *monitoringv1.ServiceMoni
 	}
 }
 
+// podMonitorGatewayWAF scrapes the Coraza WASM WAF stats off each Gateway's
+// Envoy proxy pods. proxy-wasm counters carry no native label dimensions, so
+// the wasm bakes its attribution into the stat NAME (Envoy mangles '.'/'=' to
+// '_' on its Prometheus endpoint; verified live on EG v1.7.2 / Envoy v1.37 —
+// wasm stats land unprefixed, hence `waf_filter_*`; the leading
+// `(?:envoy_)?(?:wasmcustom_)?` keeps the rules robust if a future Envoy build
+// re-adds the conventional wasm stat prefix). The scraped counters are:
+//
+//	waf_filter_tx_would_block_identifier_<policy>_owner_<ns>                       (DetectionOnly: would have blocked)
+//	waf_filter_tx_interruptions_ruleid_<id>_phase_<p>_identifier_<policy>_owner_<ns> (real block)
+//	waf_filter_tx_total                                                           (all transactions)
+//
+// metricRelabelings normalize the two decision counters into one queryable
+// series, lifting the name-baked dimensions into labels:
+//
+//	tigera_waf_decisions_total{decision="would_block"|"blocked",policy,namespace,gateway,rule_id,phase}
+//	tigera_waf_transactions_total{gateway}
+//
+// gateway/gateway_namespace come from the proxy pod's EG labels via target
+// relabelings (no wasm involvement). The identifier/owner extraction is
+// order-agnostic: the wasm assembles the suffix by ranging a Go map, so the
+// order is not guaranteed — matching each key independently also normalizes
+// both orders onto one output series. Note: extracted values are '_'-flattened
+// (the name-mangling is lossy on '-'/'.').
+func (mc *monitorComponent) podMonitorGatewayWAF() *monitoringv1.PodMonitor {
+	return &monitoringv1.PodMonitor{
+		TypeMeta: metav1.TypeMeta{Kind: monitoringv1.PodMonitorsKind, APIVersion: MonitoringAPIVersion},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      GatewayWAFMetrics,
+			Namespace: common.TigeraPrometheusNamespace,
+		},
+		Spec: monitoringv1.PodMonitorSpec{
+			// EG runs each Gateway's proxy in the Gateway's own namespace
+			// (deploy.type=GatewayNamespace), so discover across all namespaces.
+			NamespaceSelector: monitoringv1.NamespaceSelector{Any: true},
+			// Every EG-managed proxy pod carries this label; selecting on its
+			// presence catches all Gateways without enumerating names.
+			Selector: metav1.LabelSelector{
+				MatchExpressions: []metav1.LabelSelectorRequirement{
+					{
+						Key:      "gateway.envoyproxy.io/owning-gateway-name",
+						Operator: metav1.LabelSelectorOpExists,
+					},
+				},
+			},
+			PodMetricsEndpoints: []monitoringv1.PodMetricsEndpoint{
+				{
+					HonorLabels:   true,
+					Interval:      "5s",
+					ScrapeTimeout: "5s",
+					PortNumber:    ptr.To(int32(EnvoyProxyMetricsPort)),
+					Path:          "/stats/prometheus",
+					Scheme:        ptr.To(monitoringv1.SchemeHTTP),
+					// Target relabelings: attribute every scraped series to its
+					// owning Gateway from the proxy pod's EG labels.
+					RelabelConfigs: []monitoringv1.RelabelConfig{
+						{
+							SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_name"},
+							TargetLabel:  "gateway",
+							Action:       "replace",
+						},
+						{
+							SourceLabels: []monitoringv1.LabelName{"__meta_kubernetes_pod_label_gateway_envoyproxy_io_owning_gateway_namespace"},
+							TargetLabel:  "gateway_namespace",
+							Action:       "replace",
+						},
+					},
+					MetricRelabelConfigs: []monitoringv1.RelabelConfig{
+						// Keep only the WAF filter counters; drop the rest of the
+						// (voluminous) envoy proxy stat set.
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_.*`,
+							Action:       "keep",
+						},
+						// policy <- identifier=<policy>; namespace <- owner=<ns>
+						// ("cluster" for global). Order-agnostic (see doc above):
+						// match each key up to the other key or end of name.
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_.*_identifier_(.+?)(?:_owner_.+)?`,
+							TargetLabel:  "policy",
+							Replacement:  ptr.To("$1"),
+							Action:       "replace",
+						},
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_.*_owner_(.+?)(?:_identifier_.+)?`,
+							TargetLabel:  "namespace",
+							Replacement:  ptr.To("$1"),
+							Action:       "replace",
+						},
+						// rule_id/phase: only the interruptions (real-block)
+						// counter bakes these in; would_block/total won't match.
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_tx_interruptions_ruleid_(.+?)_phase_.+`,
+							TargetLabel:  "rule_id",
+							Replacement:  ptr.To("$1"),
+							Action:       "replace",
+						},
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_tx_interruptions_ruleid_.+?_phase_(.+?)(?:_(?:identifier|owner)_.+)?`,
+							TargetLabel:  "phase",
+							Replacement:  ptr.To("$1"),
+							Action:       "replace",
+						},
+						// decision dimension: DetectionOnly vs real block.
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_tx_would_block.*`,
+							TargetLabel:  "decision",
+							Replacement:  ptr.To("would_block"),
+							Action:       "replace",
+						},
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_tx_interruptions.*`,
+							TargetLabel:  "decision",
+							Replacement:  ptr.To("blocked"),
+							Action:       "replace",
+						},
+						// Collapse both decision counters' per-policy/rule name
+						// variants into one stable series (labels carry the dims).
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_tx_(?:would_block|interruptions).*`,
+							TargetLabel:  "__name__",
+							Replacement:  ptr.To("tigera_waf_decisions_total"),
+							Action:       "replace",
+						},
+						// Transaction volume (denominator); no per-policy labels.
+						{
+							SourceLabels: []monitoringv1.LabelName{"__name__"},
+							Regex:        `(?:envoy_)?(?:wasmcustom_)?waf_filter_tx_total`,
+							TargetLabel:  "__name__",
+							Replacement:  ptr.To("tigera_waf_transactions_total"),
+							Action:       "replace",
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// gatewayWAFMetricsPolicy lets Tigera Prometheus scrape the Envoy Gateway proxy
+// WAF metrics port. The proxies run in each Gateway's own (arbitrary) namespace,
+// so this is a GlobalNetworkPolicy selecting the proxy pods cluster-wide. It
+// allows :19001 ingress from Prometheus and then Passes everything else — the
+// trailing Pass is load-bearing: without it, selecting the proxy pods into the
+// calico-system tier with only the metrics rule would drop their data-plane
+// ingress at end-of-tier. Mirrors the Pass-terminated gateway controller policy.
+func gatewayWAFMetricsPolicy() *v3.GlobalNetworkPolicy {
+	return &v3.GlobalNetworkPolicy{
+		TypeMeta:   metav1.TypeMeta{Kind: "GlobalNetworkPolicy", APIVersion: "projectcalico.org/v3"},
+		ObjectMeta: metav1.ObjectMeta{Name: GatewayWAFMetricsPolicyName},
+		Spec: v3.GlobalNetworkPolicySpec{
+			Order:    &networkpolicy.HighPrecedenceOrder,
+			Tier:     networkpolicy.CalicoTierName,
+			Selector: EnvoyGatewayProxySelector,
+			Types:    []v3.PolicyType{v3.PolicyTypeIngress},
+			Ingress: []v3.Rule{
+				{
+					Action:   v3.Allow,
+					Protocol: &networkpolicy.TCPProtocol,
+					Source:   networkpolicy.PrometheusSourceEntityRule,
+					Destination: v3.EntityRule{
+						Ports: networkpolicy.Ports(EnvoyProxyMetricsPort),
+					},
+				},
+				// Preserve all other proxy ingress (data plane, xDS, readiness).
+				{Action: v3.Pass},
+			},
+		},
+	}
+}
+
 func (mc *monitorComponent) tlsConfig(serverName string) *monitoringv1.TLSConfig {
 	return &monitoringv1.TLSConfig{
 		TLSFilesConfig: monitoringv1.TLSFilesConfig{
@@ -1439,6 +1644,16 @@ func calicoSystemPrometheusPolicy(cfg *Config) *v3.NetworkPolicy {
 			Action:      v3.Allow,
 			Protocol:    &networkpolicy.TCPProtocol,
 			Destination: render.DexEntityRule,
+		},
+		{
+			Action:   v3.Allow,
+			Protocol: &networkpolicy.TCPProtocol,
+			Destination: v3.EntityRule{
+				// Egress access for Envoy Gateway proxy WAF metrics (would_block,
+				// interruptions). Paired with gatewayWAFMetricsPolicy (the proxy
+				// side). The proxies are host-arbitrary, so scope to the port.
+				Ports: networkpolicy.Ports(EnvoyProxyMetricsPort),
+			},
 		},
 	}...)
 
