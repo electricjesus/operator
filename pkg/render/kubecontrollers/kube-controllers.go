@@ -278,11 +278,19 @@ func (c *kubeControllersComponent) ResolveImages(is *operatorv1.ImageSet) error 
 	if err != nil {
 		return err
 	}
+	// TEMP dev override (EV-6386 fork iteration — DO NOT BACKPORT): pin
+	// calico-kube-controllers to the locally-built uber image carrying the WAF
+	// stack + G2 hot-loop fix, so un-ignoring the deploy lets the operator
+	// manage it without reverting to a registry image that lacks the dev build.
+	c.calicoImage = "gcr.io/tigera-dev/seth/calico:waf-stack-fork-2026-05-31"
 	if c.cfg.Installation.Variant.IsEnterprise() && c.cfg.WAFGatewayExtensionEnabled {
 		c.wasmImage, err = components.GetReference(components.ComponentCorazaWASM, reg, path, prefix, is)
 		if err != nil {
 			return err
 		}
+		// TEMP dev override (EV-6386 fork iteration — DO NOT BACKPORT): reuse the
+		// existing coraza-wasm dev image (unchanged by this work).
+		c.wasmImage = "gcr.io/tigera-dev/seth/coraza-wasm:waf-obs-2026-05-30"
 	}
 	return nil
 }
