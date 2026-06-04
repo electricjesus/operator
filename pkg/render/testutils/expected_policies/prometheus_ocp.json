@@ -111,6 +111,15 @@
         "protocol": "TCP",
         "destination": {
           "ports": [
+            19001
+          ]
+        }
+      },
+      {
+        "action": "Allow",
+        "protocol": "TCP",
+        "destination": {
+          "ports": [
             9094
           ]
         }
