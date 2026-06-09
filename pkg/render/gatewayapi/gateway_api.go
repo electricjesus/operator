@@ -27,6 +27,7 @@ import (
 	"github.com/tigera/operator/pkg/components"
 	"github.com/tigera/operator/pkg/ptr"
 	"github.com/tigera/operator/pkg/render"
+	aigwrender "github.com/tigera/operator/pkg/render/aigateway"
 	rcomp "github.com/tigera/operator/pkg/render/common/components"
 	rmeta "github.com/tigera/operator/pkg/render/common/meta"
 	"github.com/tigera/operator/pkg/render/common/secret"
@@ -421,6 +422,12 @@ type GatewayAPIImplementationConfig struct {
 	CustomEnvoyGateway    *envoyapi.EnvoyGateway
 	CustomEnvoyProxies    map[string]*envoyapi.EnvoyProxy
 	CurrentGatewayClasses set.Set[string]
+
+	// AIGateway is non-nil when an AIGateway CR is present. When non-nil the
+	// render overlays an `extensionManager` block onto the envoy-gateway
+	// config and appends the ai-gateway-extproc sidecar (with its volumes) to
+	// each per-class EnvoyProxy whose GatewayClass is in scope.
+	AIGateway *operatorv1.AIGateway
 }
 
 type gatewayAPIImplementationComponent struct {
@@ -430,6 +437,7 @@ type gatewayAPIImplementationComponent struct {
 	envoyRatelimitImage string
 	wafHTTPFilterImage  string
 	L7LogCollectorImage string
+	extProcImage        string
 }
 
 func GatewayAPIImplementationComponent(cfg *GatewayAPIImplementationConfig) render.Component {
@@ -462,6 +470,10 @@ func (pr *gatewayAPIImplementationComponent) ResolveImages(is *operatorv1.ImageS
 			return err
 		}
 		pr.L7LogCollectorImage, err = components.GetReference(components.ComponentGatewayL7Collector, reg, path, prefix, is)
+		if err != nil {
+			return err
+		}
+		pr.extProcImage, err = components.GetReference(components.ComponentGatewayAPIAIExtProc, reg, path, prefix, is)
 		if err != nil {
 			return err
 		}
@@ -609,6 +621,31 @@ func (pr *gatewayAPIImplementationComponent) Objects() ([]client.Object, []clien
 	// Enable extension APIs.
 	envoyGatewayConfig.ExtensionAPIs.EnableBackend = true
 	envoyGatewayConfig.ExtensionAPIs.EnableEnvoyPatchPolicy = true
+
+	// AIGateway overlay: register the EAIG extension manager on envoy-gateway
+	// when an AIGateway CR is present. Gated strictly on cfg.AIGateway. This
+	// points envoy-gateway's xdsTranslator post-hooks at the AI Gateway
+	// controller's extension server (rendered by pkg/render/aigateway into
+	// calico-system). Single-controller / non-namespaced EG 1.8.0: there is
+	// exactly one envoy-gateway config, so the extensionManager applies to all
+	// classes this controller serves.
+	if pr.cfg.AIGateway != nil {
+		envoyGatewayConfig.ExtensionManager = &envoyapi.ExtensionManager{
+			Hooks: &envoyapi.ExtensionHooks{
+				XDSTranslator: &envoyapi.XDSTranslatorHooks{
+					Post: extensionHooksFromStrings(aigwrender.RecommendedExtensionHooks()),
+				},
+			},
+			Service: &envoyapi.ExtensionService{
+				BackendEndpoint: envoyapi.BackendEndpoint{
+					FQDN: &envoyapi.FQDNEndpoint{
+						Hostname: aigwrender.ExtensionServerSvc,
+						Port:     int32(aigwrender.ExtensionServerPort),
+					},
+				},
+			},
+		}
+	}
 
 	// Rebuild the ConfigMap with those changes.
 	envoyGatewayConfigMap := resources.envoyGatewayConfigMap.DeepCopyObject().(*corev1.ConfigMap)
@@ -1062,6 +1099,35 @@ func (pr *gatewayAPIImplementationComponent) envoyProxyConfig(className string, 
 		}
 	}
 
+	// AIGateway sidecar overlay: append the ai-gateway-extproc container and
+	// supporting volumes to the EnvoyProxy template when the class is in
+	// scope. Gated strictly on cfg.AIGateway and class match. Envoy Gateway's
+	// KubernetesPodSpec only exposes InitContainers, so the sidecar is
+	// appended there with RestartPolicy=Always (k8s native sidecar). Only the
+	// Deployment shape is supported (matches the WAF/L7 collector path above;
+	// DaemonSet has no sidecar slot here). Placed after the Enterprise WAF/L7
+	// block because EAIG is Enterprise-only, but gated independently on
+	// cfg.AIGateway rather than on Variant.
+	if shouldEnableAIForClass(pr.cfg.AIGateway, className) &&
+		envoyProxy.Spec.Provider.Kubernetes.EnvoyDeployment != nil {
+		if envoyProxy.Spec.Provider.Kubernetes.EnvoyDeployment.Pod == nil {
+			envoyProxy.Spec.Provider.Kubernetes.EnvoyDeployment.Pod = &envoyapi.KubernetesPodSpec{}
+		}
+		dep := envoyProxy.Spec.Provider.Kubernetes.EnvoyDeployment
+		extProc := aigwrender.ExtProcContainer(pr.extProcImage, pr.cfg.AIGateway.Spec.ExtProcContainer)
+		hasExtProc := false
+		for _, ic := range dep.InitContainers {
+			if ic.Name == extProc.Name {
+				hasExtProc = true
+				break
+			}
+		}
+		if !hasExtProc {
+			dep.InitContainers = append(dep.InitContainers, extProc)
+		}
+		dep.Pod.Volumes = append(dep.Pod.Volumes, aigwrender.ExtProcVolumes()...)
+	}
+
 	return envoyProxy
 }
 
@@ -1092,6 +1158,34 @@ type GatewayAPIImplementationConfigInterface interface {
 
 func (pr *gatewayAPIImplementationComponent) GetConfig() *GatewayAPIImplementationConfig {
 	return pr.cfg
+}
+
+// extensionHooksFromStrings maps the EAIG-recommended xdsTranslator post-hook
+// names onto upstream Envoy Gateway's XDSTranslatorHook string-typed enum.
+func extensionHooksFromStrings(s []string) []envoyapi.XDSTranslatorHook {
+	out := make([]envoyapi.XDSTranslatorHook, 0, len(s))
+	for _, name := range s {
+		out = append(out, envoyapi.XDSTranslatorHook(name))
+	}
+	return out
+}
+
+// shouldEnableAIForClass reports whether the ext_proc sidecar should be
+// appended to the EnvoyProxy template for the given GatewayClass name.
+// An empty AIGateway.Spec.GatewayClasses list means "all classes".
+func shouldEnableAIForClass(ai *operatorv1.AIGateway, className string) bool {
+	if ai == nil {
+		return false
+	}
+	if len(ai.Spec.GatewayClasses) == 0 {
+		return true
+	}
+	for _, n := range ai.Spec.GatewayClasses {
+		if n == className {
+			return true
+		}
+	}
+	return false
 }
 
 // applyEnvoyProxyServiceOverrides applies the overrides to the given EnvoyProxy.
