@@ -25,7 +25,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	operatorv1 "github.com/tigera/operator/api/v1"
-	"github.com/tigera/operator/pkg/components"
 	"github.com/tigera/operator/pkg/render"
 	rmeta "github.com/tigera/operator/pkg/render/common/meta"
 )
@@ -59,19 +58,13 @@ func NewComponent(cfg *Config) render.Component {
 }
 
 func (c *component) ResolveImages(is *operatorv1.ImageSet) error {
-	reg := c.cfg.Installation.Registry
-	path := c.cfg.Installation.ImagePath
-	prefix := c.cfg.Installation.ImagePrefix
-
-	var err error
-	c.controllerImage, err = components.GetReference(components.ComponentGatewayAPIAIGatewayController, reg, path, prefix, is)
-	if err != nil {
-		return err
-	}
-	c.extProcImage, err = components.GetReference(components.ComponentGatewayAPIAIExtProc, reg, path, prefix, is)
-	if err != nil {
-		return err
-	}
+	// HACK(hackathon): pin EAIG controller/extproc to upstream vendor images;
+	// revert to Tigera-mirrored + normal registry composition post-hackathon.
+	// EAIG images are not in the Tigera registry, so the normal
+	// components.GetReference(...) composition resolves to an unpullable ref.
+	// See UpstreamControllerImage / UpstreamExtProcImage in constants.go.
+	c.controllerImage = UpstreamControllerImage
+	c.extProcImage = UpstreamExtProcImage
 	return nil
 }
 

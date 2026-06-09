@@ -1374,6 +1374,9 @@ var _ = Describe("Gateway API rendering tests", func() {
 				And(
 					HaveField("Name", "ai-gateway-extproc"),
 					HaveField("RestartPolicy", ptr.ToPtr(corev1.ContainerRestartPolicyAlways)),
+					// HACK(hackathon): extproc sidecar must carry the literal
+					// upstream vendor image (registry composition bypassed).
+					HaveField("Image", "docker.io/envoyproxy/ai-gateway-extproc:v0.7.0"),
 				),
 			))
 

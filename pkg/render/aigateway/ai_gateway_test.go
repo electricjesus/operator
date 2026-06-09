@@ -231,6 +231,58 @@ func TestRenderCRDs(t *testing.T) {
 	}
 }
 
+// TestUpstreamImagesBypassRegistry proves the HACK(hackathon) pin: even with a
+// non-empty Installation.Registry/ImagePath (which would normally compose a
+// Tigera-registry ref), the controller Deployment and the extproc sidecar must
+// emit the literal upstream docker.io/envoyproxy refs so the demo can pull them.
+func TestUpstreamImagesBypassRegistry(t *testing.T) {
+	const wantController = "docker.io/envoyproxy/ai-gateway-controller:v0.7.0"
+	const wantExtProc = "docker.io/envoyproxy/ai-gateway-extproc:v0.7.0"
+
+	// Constants must be the exact upstream refs.
+	if aigateway.UpstreamControllerImage != wantController {
+		t.Errorf("UpstreamControllerImage: got %q want %q", aigateway.UpstreamControllerImage, wantController)
+	}
+	if aigateway.UpstreamExtProcImage != wantExtProc {
+		t.Errorf("UpstreamExtProcImage: got %q want %q", aigateway.UpstreamExtProcImage, wantExtProc)
+	}
+
+	// Render with a Tigera-style registry/path set to prove it is bypassed.
+	c := aigateway.NewComponent(&aigateway.Config{
+		Installation: &operatorv1.InstallationSpec{
+			Variant:   operatorv1.TigeraSecureEnterprise,
+			Registry:  "quay.io/",
+			ImagePath: "tigera",
+		},
+		AIGateway: &operatorv1.AIGateway{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+	})
+	if err := c.ResolveImages(nil); err != nil {
+		t.Fatalf("ResolveImages: %v", err)
+	}
+	objs, _ := c.Objects()
+
+	var deploy *appsv1.Deployment
+	for _, o := range objs {
+		if d, ok := o.(*appsv1.Deployment); ok && d.Name == aigateway.ControllerName {
+			deploy = d
+			break
+		}
+	}
+	if deploy == nil {
+		t.Fatalf("controller Deployment %q not rendered", aigateway.ControllerName)
+	}
+	if got := deploy.Spec.Template.Spec.Containers[0].Image; got != wantController {
+		t.Errorf("controller image: got %q want %q (registry composition not bypassed)", got, wantController)
+	}
+
+	// The extproc sidecar image is consumed by the gatewayapi render via the
+	// same upstream constant; assert the helper that builds the sidecar emits it.
+	extProc := aigateway.ExtProcContainer(aigateway.UpstreamExtProcImage, nil)
+	if extProc.Image != wantExtProc {
+		t.Errorf("extproc sidecar image: got %q want %q", extProc.Image, wantExtProc)
+	}
+}
+
 func TestVersionStampInvariant(t *testing.T) {
 	if components.ComponentGatewayAPIAIGatewayController.Version !=
 		components.ComponentGatewayAPIAIExtProc.Version {

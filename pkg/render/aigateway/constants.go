@@ -25,6 +25,15 @@ const (
 	RateLimitSvc  = "envoy-ai-gateway-ratelimit.calico-system.svc"
 	RateLimitPort = 4317
 
+	// HACK(hackathon): pin EAIG controller/extproc to upstream vendor images;
+	// revert to Tigera-mirrored + normal registry composition post-hackathon.
+	// EAIG images are NOT mirrored in the Tigera registry, so the normal
+	// component/ResolveImages path resolves to an unpullable
+	// <registry>/<imagePath>/envoy-ai-gateway-*:v0.7.0 ref and the demo
+	// deploys into ImagePullBackOff. Pin the literal upstream refs instead.
+	UpstreamControllerImage = "docker.io/envoyproxy/ai-gateway-controller:v0.7.0"
+	UpstreamExtProcImage    = "docker.io/envoyproxy/ai-gateway-extproc:v0.7.0"
+
 	TigeraStatusName = "aigateway"
 	FinalizerName    = "operator.tigera.io/aigateway-controller"
 )
