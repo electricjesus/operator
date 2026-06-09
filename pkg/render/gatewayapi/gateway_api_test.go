@@ -24,6 +24,7 @@ import (
 	operatorv1 "github.com/tigera/operator/api/v1"
 	"github.com/tigera/operator/pkg/components"
 	"github.com/tigera/operator/pkg/ptr"
+	"github.com/tigera/operator/pkg/render"
 	rtest "github.com/tigera/operator/pkg/render/common/test"
 	admissionregv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -1300,5 +1301,117 @@ var _ = Describe("Gateway API rendering tests", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(serviceAccount.Name).To(Equal("waf-http-filter"))
 		Expect(serviceAccount.Namespace).To(Equal("tigera-gateway"))
+	})
+
+	Context("AIGateway overlays (non-namespaced EG)", func() {
+		const gatewayClassName = "tigera-gateway-class"
+
+		newComp := func(ai *operatorv1.AIGateway, classes []operatorv1.GatewayClassSpec) render.Component {
+			return GatewayAPIImplementationComponent(&GatewayAPIImplementationConfig{
+				Installation: &operatorv1.InstallationSpec{
+					Variant: operatorv1.TigeraSecureEnterprise,
+				},
+				GatewayAPI: &operatorv1.GatewayAPI{
+					Spec: operatorv1.GatewayAPISpec{GatewayClasses: classes},
+				},
+				AIGateway: ai,
+			})
+		}
+
+		It("renders extensionManager when AIGateway is present", func() {
+			comp := newComp(
+				&operatorv1.AIGateway{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+				[]operatorv1.GatewayClassSpec{{Name: gatewayClassName}},
+			)
+			Expect(comp.ResolveImages(nil)).NotTo(HaveOccurred())
+			objs, _ := comp.Objects()
+
+			cm, err := rtest.GetResourceOfType[*corev1.ConfigMap](objs, "envoy-gateway-config", "tigera-gateway")
+			Expect(err).NotTo(HaveOccurred())
+			yamlBytes := cm.Data[EnvoyGatewayConfigKey]
+			Expect(yamlBytes).To(ContainSubstring("extensionManager:"))
+			Expect(yamlBytes).To(ContainSubstring("envoy-ai-gateway-controller.calico-system.svc"))
+
+			egCfg := &envoyapi.EnvoyGateway{}
+			Expect(yaml.Unmarshal([]byte(yamlBytes), egCfg)).NotTo(HaveOccurred())
+			Expect(egCfg.ExtensionManager).NotTo(BeNil())
+			Expect(egCfg.ExtensionManager.Service.FQDN).NotTo(BeNil())
+			Expect(egCfg.ExtensionManager.Service.FQDN.Hostname).To(Equal("envoy-ai-gateway-controller.calico-system.svc"))
+			Expect(egCfg.ExtensionManager.Service.FQDN.Port).To(BeNumerically("==", 1063))
+			Expect(egCfg.ExtensionManager.Hooks).NotTo(BeNil())
+			Expect(egCfg.ExtensionManager.Hooks.XDSTranslator).NotTo(BeNil())
+			Expect(egCfg.ExtensionManager.Hooks.XDSTranslator.Post).To(ContainElements(
+				envoyapi.XDSTranslatorHook("VirtualHost"),
+				envoyapi.XDSTranslatorHook("Translation"),
+				envoyapi.XDSTranslatorHook("HTTPListener"),
+				envoyapi.XDSTranslatorHook("Route"),
+				envoyapi.XDSTranslatorHook("Cluster"),
+			))
+		})
+
+		It("omits extensionManager when AIGateway is absent", func() {
+			comp := newComp(nil, []operatorv1.GatewayClassSpec{{Name: gatewayClassName}})
+			Expect(comp.ResolveImages(nil)).NotTo(HaveOccurred())
+			objs, _ := comp.Objects()
+
+			cm, err := rtest.GetResourceOfType[*corev1.ConfigMap](objs, "envoy-gateway-config", "tigera-gateway")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(cm.Data[EnvoyGatewayConfigKey]).NotTo(ContainSubstring("extensionManager:"))
+		})
+
+		It("appends ai-gateway-extproc to the EnvoyProxy when class is in scope", func() {
+			comp := newComp(
+				&operatorv1.AIGateway{ObjectMeta: metav1.ObjectMeta{Name: "default"}},
+				[]operatorv1.GatewayClassSpec{{Name: gatewayClassName}},
+			)
+			Expect(comp.ResolveImages(nil)).NotTo(HaveOccurred())
+			objs, _ := comp.Objects()
+
+			proxy, err := rtest.GetResourceOfType[*envoyapi.EnvoyProxy](objs, gatewayClassName, "tigera-gateway")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(proxy.Spec.Provider.Kubernetes.EnvoyDeployment).NotTo(BeNil())
+			Expect(proxy.Spec.Provider.Kubernetes.EnvoyDeployment.InitContainers).To(ContainElement(
+				And(
+					HaveField("Name", "ai-gateway-extproc"),
+					HaveField("RestartPolicy", ptr.ToPtr(corev1.ContainerRestartPolicyAlways)),
+				),
+			))
+
+			volNames := []string{}
+			for _, v := range proxy.Spec.Provider.Kubernetes.EnvoyDeployment.Pod.Volumes {
+				volNames = append(volNames, v.Name)
+			}
+			Expect(volNames).To(ContainElements("filter-config", "extproc-uds"))
+		})
+
+		It("omits the ext_proc sidecar when class is not in AIGateway.Spec.GatewayClasses", func() {
+			comp := newComp(
+				&operatorv1.AIGateway{
+					ObjectMeta: metav1.ObjectMeta{Name: "default"},
+					Spec:       operatorv1.AIGatewaySpec{GatewayClasses: []string{"other-class"}},
+				},
+				[]operatorv1.GatewayClassSpec{{Name: gatewayClassName}},
+			)
+			Expect(comp.ResolveImages(nil)).NotTo(HaveOccurred())
+			objs, _ := comp.Objects()
+
+			proxy, err := rtest.GetResourceOfType[*envoyapi.EnvoyProxy](objs, gatewayClassName, "tigera-gateway")
+			Expect(err).NotTo(HaveOccurred())
+			for _, ic := range proxy.Spec.Provider.Kubernetes.EnvoyDeployment.InitContainers {
+				Expect(ic.Name).NotTo(Equal("ai-gateway-extproc"))
+			}
+		})
+
+		It("omits the ext_proc sidecar when AIGateway is absent", func() {
+			comp := newComp(nil, []operatorv1.GatewayClassSpec{{Name: gatewayClassName}})
+			Expect(comp.ResolveImages(nil)).NotTo(HaveOccurred())
+			objs, _ := comp.Objects()
+
+			proxy, err := rtest.GetResourceOfType[*envoyapi.EnvoyProxy](objs, gatewayClassName, "tigera-gateway")
+			Expect(err).NotTo(HaveOccurred())
+			for _, ic := range proxy.Spec.Provider.Kubernetes.EnvoyDeployment.InitContainers {
+				Expect(ic.Name).NotTo(Equal("ai-gateway-extproc"))
+			}
+		})
 	})
 })
