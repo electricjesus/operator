@@ -31,29 +31,29 @@ type fakeStatusManager struct {
 	found     bool
 }
 
-func (f *fakeStatusManager) Run(_ context.Context)                                            {}
-func (f *fakeStatusManager) OnCRFound()                                                       { f.found = true }
-func (f *fakeStatusManager) OnCRNotFound()                                                    { f.found = false }
-func (f *fakeStatusManager) AddDaemonsets(_ []types.NamespacedName)                           {}
-func (f *fakeStatusManager) AddDeployments(_ []types.NamespacedName)                          {}
-func (f *fakeStatusManager) AddStatefulSets(_ []types.NamespacedName)                         {}
-func (f *fakeStatusManager) AddCronJobs(_ []types.NamespacedName)                             {}
-func (f *fakeStatusManager) AddCertificateSigningRequests(_ string, _ map[string]string)      {}
-func (f *fakeStatusManager) RemoveDaemonsets(_ ...types.NamespacedName)                       {}
-func (f *fakeStatusManager) RemoveDeployments(_ ...types.NamespacedName)                      {}
-func (f *fakeStatusManager) RemoveStatefulSets(_ ...types.NamespacedName)                     {}
-func (f *fakeStatusManager) RemoveCronJobs(_ ...types.NamespacedName)                         {}
-func (f *fakeStatusManager) RemoveCertificateSigningRequests(_ string)                        {}
+func (f *fakeStatusManager) Run(_ context.Context)                                       {}
+func (f *fakeStatusManager) OnCRFound()                                                  { f.found = true }
+func (f *fakeStatusManager) OnCRNotFound()                                               { f.found = false }
+func (f *fakeStatusManager) AddDaemonsets(_ []types.NamespacedName)                      {}
+func (f *fakeStatusManager) AddDeployments(_ []types.NamespacedName)                     {}
+func (f *fakeStatusManager) AddStatefulSets(_ []types.NamespacedName)                    {}
+func (f *fakeStatusManager) AddCronJobs(_ []types.NamespacedName)                        {}
+func (f *fakeStatusManager) AddCertificateSigningRequests(_ string, _ map[string]string) {}
+func (f *fakeStatusManager) RemoveDaemonsets(_ ...types.NamespacedName)                  {}
+func (f *fakeStatusManager) RemoveDeployments(_ ...types.NamespacedName)                 {}
+func (f *fakeStatusManager) RemoveStatefulSets(_ ...types.NamespacedName)                {}
+func (f *fakeStatusManager) RemoveCronJobs(_ ...types.NamespacedName)                    {}
+func (f *fakeStatusManager) RemoveCertificateSigningRequests(_ string)                   {}
 func (f *fakeStatusManager) SetDegraded(_ operatorv1.TigeraStatusReason, _ string, _ error, _ logr.Logger) {
 	f.degraded = true
 }
-func (f *fakeStatusManager) ClearDegraded()                  { f.degraded = false }
-func (f *fakeStatusManager) SetWarning(_ string, _ string)   {}
-func (f *fakeStatusManager) ClearWarning(_ string)           {}
-func (f *fakeStatusManager) IsAvailable() bool               { return f.available }
-func (f *fakeStatusManager) IsProgressing() bool             { return false }
-func (f *fakeStatusManager) IsDegraded() bool                { return f.degraded }
-func (f *fakeStatusManager) ReadyToMonitor()                 {}
+func (f *fakeStatusManager) ClearDegraded()                   { f.degraded = false }
+func (f *fakeStatusManager) SetWarning(_ string, _ string)    {}
+func (f *fakeStatusManager) ClearWarning(_ string)            {}
+func (f *fakeStatusManager) IsAvailable() bool                { return f.available }
+func (f *fakeStatusManager) IsProgressing() bool              { return false }
+func (f *fakeStatusManager) IsDegraded() bool                 { return f.degraded }
+func (f *fakeStatusManager) ReadyToMonitor()                  {}
 func (f *fakeStatusManager) SetMetaData(_ *metav1.ObjectMeta) {}
 
 func TestReconcileNoCR(t *testing.T) {
