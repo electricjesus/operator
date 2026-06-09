@@ -138,7 +138,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, _ reconcile.Request) (reconc
 		}
 		return reconcile.Result{}, err
 	}
-	if !inst.Spec.Variant.IsEnterprise() {
+	if inst.Spec.Variant != operatorv1.TigeraSecureEnterprise {
 		if r.status != nil {
 			r.status.SetDegraded(operatorv1.ResourceValidationError,
 				"AIGateway requires Enterprise variant", nil, log)

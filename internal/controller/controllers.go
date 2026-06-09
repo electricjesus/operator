@@ -177,6 +177,12 @@ func AddToManager(mgr ctrl.Manager, options options.ControllerOptions) error {
 	}).SetupWithManager(mgr, options); err != nil {
 		return fmt.Errorf("failed to create controller %s: %v", "GatewayAPI", err)
 	}
+	if err := (&AIGatewayReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr, options); err != nil {
+		return fmt.Errorf("failed to create controller %s: %v", "AIGateway", err)
+	}
 	if err := (&WhiskerReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),

@@ -84,6 +84,14 @@ func Add(mgr manager.Manager, opts options.ControllerOptions) error {
 		return fmt.Errorf("gatewayapi-controller failed to watch primary resource: %w", err)
 	}
 
+	// Watch the AIGateway CR. Presence of this CR (singleton, name "default")
+	// flips on the AI-Gateway render overlays. Absence leaves the
+	// GatewayAPI render unchanged.
+	if err = c.WatchObject(&operatorv1.AIGateway{}, &handler.EnqueueRequestForObject{}); err != nil {
+		log.V(5).Info("Failed to create AIGateway watch", "err", err)
+		return fmt.Errorf("gatewayapi-controller failed to watch AIGateway resource: %w", err)
+	}
+
 	if err = utils.AddInstallationWatch(c); err != nil {
 		log.V(5).Info("Failed to create network watch", "err", err)
 		return fmt.Errorf("gatewayapi-controller failed to watch Tigera network resource: %w", err)
@@ -274,12 +282,27 @@ func (r *ReconcileGatewayAPI) Reconcile(ctx context.Context, request reconcile.R
 		return reconcile.Result{}, err
 	}
 
+	// Fetch the AIGateway CR (cluster-scoped singleton, name "default") so the
+	// render can sense whether the AI-Gateway overlays should fire. Absence is
+	// the steady state.
+	var aiGateway *operatorv1.AIGateway
+	aiGW := &operatorv1.AIGateway{}
+	if err := r.client.Get(ctx, types.NamespacedName{Name: "default"}, aiGW); err != nil {
+		if !errors.IsNotFound(err) {
+			r.status.SetDegraded(operatorv1.ResourceReadError, "Error querying for AIGateway CR", err, reqLogger)
+			return reconcile.Result{}, err
+		}
+	} else {
+		aiGateway = aiGW
+	}
+
 	gatewayConfig := &gatewayapi.GatewayAPIImplementationConfig{
 		Installation:          installation,
 		PullSecrets:           pullSecrets,
 		GatewayAPI:            gatewayAPI,
 		CustomEnvoyProxies:    make(map[string]*envoyapi.EnvoyProxy),
 		CurrentGatewayClasses: set.New[string](),
+		AIGateway:             aiGateway,
 	}
 
 	if gatewayAPI.Spec.EnvoyGatewayConfigRef != nil {
