@@ -102,3 +102,7 @@ ut/
 
 # Logs
 *.log
+
+# Embedded Envoy AI Gateway helm charts pulled at build time (covered by *.tgz above)
+pkg/render/aigateway/ai-gateway-helm.tgz
+pkg/render/aigateway/ai-gateway-crds-helm.tgz

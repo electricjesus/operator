@@ -264,6 +264,30 @@ $(ENVOY_GATEWAY_RESOURCES): $(HACK_BIN)/helm-$(BUILDARCH)
 		--include-crds \
 	>> $@
 
+# Envoy AI Gateway helm charts (pulled at build time, embedded via //go:embed)
+ENVOY_AI_GATEWAY_HELM_CHART ?= oci://docker.io/envoyproxy/ai-gateway-helm
+ENVOY_AI_GATEWAY_CRDS_HELM_CHART ?= oci://docker.io/envoyproxy/ai-gateway-crds-helm
+ENVOY_AI_GATEWAY_VERSION ?= v0.7.0
+ENVOY_AI_GATEWAY_CHART = pkg/render/aigateway/ai-gateway-helm.tgz
+ENVOY_AI_GATEWAY_CRDS_CHART = pkg/render/aigateway/ai-gateway-crds-helm.tgz
+
+$(ENVOY_AI_GATEWAY_CHART): $(HACK_BIN)/helm-$(BUILDARCH)
+	@mkdir -p pkg/render/aigateway
+	$(HELM_BUILDARCH_BINARY) pull $(ENVOY_AI_GATEWAY_HELM_CHART) \
+		--version $(ENVOY_AI_GATEWAY_VERSION) \
+		--destination pkg/render/aigateway/
+	@mv pkg/render/aigateway/ai-gateway-helm-$(ENVOY_AI_GATEWAY_VERSION).tgz $@
+
+$(ENVOY_AI_GATEWAY_CRDS_CHART): $(HACK_BIN)/helm-$(BUILDARCH)
+	@mkdir -p pkg/render/aigateway
+	$(HELM_BUILDARCH_BINARY) pull $(ENVOY_AI_GATEWAY_CRDS_HELM_CHART) \
+		--version $(ENVOY_AI_GATEWAY_VERSION) \
+		--destination pkg/render/aigateway/
+	@mv pkg/render/aigateway/ai-gateway-crds-helm-$(ENVOY_AI_GATEWAY_VERSION).tgz $@
+
+.PHONY: ai-gateway-helm-charts
+ai-gateway-helm-charts: $(ENVOY_AI_GATEWAY_CHART) $(ENVOY_AI_GATEWAY_CRDS_CHART)
+
 $(HELM_BUILDARCH_BINARY): $(HELM_BUILDARCH_VERSIONED_BINARY)
 	$(info ░▒▓ symlink $(HELM_BUILDARCH_VERSIONED_BINARY) -> $(HELM_BUILDARCH_BINARY))
 	@ln -sf helm-$(BUILDARCH)-$(HELM3_VERSION) $(HACK_BIN)/helm-$(BUILDARCH)
@@ -276,7 +300,7 @@ $(HELM_BUILDARCH_VERSIONED_BINARY): | $(HACK_BIN)
 
 
 build: $(BINDIR)/operator-$(ARCH)
-$(BINDIR)/operator-$(ARCH): $(SRC_FILES) $(ENVOY_GATEWAY_RESOURCES) $(ISTIO_CHART_FILES)
+$(BINDIR)/operator-$(ARCH): $(SRC_FILES) $(ENVOY_GATEWAY_RESOURCES) $(ENVOY_AI_GATEWAY_CRDS_CHART) $(ISTIO_CHART_FILES)
 	mkdir -p $(BINDIR)
 	$(CONTAINERIZED) -e CGO_ENABLED=$(CGO_ENABLED) -e GOEXPERIMENT=$(GOEXPERIMENT) $(CALICO_BUILD) \
 	sh -c '$(GIT_CONFIG_SSH) \
@@ -339,7 +363,7 @@ GINKGO_FOCUS?=.*
 ENVTEST_K8S_VERSION?=1.34.x
 
 .PHONY: ut
-ut: $(ENVOY_GATEWAY_RESOURCES) $(ISTIO_CHART_FILES)
+ut: $(ENVOY_GATEWAY_RESOURCES) $(ENVOY_AI_GATEWAY_CRDS_CHART) $(ISTIO_CHART_FILES)
 	-mkdir -p .go-pkg-cache report
 	$(CONTAINERIZED) $(CALICO_BUILD) sh -c '$(GIT_CONFIG_SSH) \
 	go install sigs.k8s.io/controller-runtime/tools/setup-envtest@release-0.22 && \
@@ -348,7 +372,7 @@ ut: $(ENVOY_GATEWAY_RESOURCES) $(ISTIO_CHART_FILES)
 
 ## Run the functional tests
 fv: cluster-create load-container-images run-fvs cluster-destroy
-run-fvs: $(ENVOY_GATEWAY_RESOURCES) $(ISTIO_CHART_FILES)
+run-fvs: $(ENVOY_GATEWAY_RESOURCES) $(ENVOY_AI_GATEWAY_CRDS_CHART) $(ISTIO_CHART_FILES)
 	-mkdir -p .go-pkg-cache report
 	$(CONTAINERIZED) $(CALICO_BUILD) sh -c '$(GIT_CONFIG_SSH) \
 	ginkgo -focus="$(GINKGO_FOCUS)" $(GINKGO_ARGS) "$(FV_DIR)"'
