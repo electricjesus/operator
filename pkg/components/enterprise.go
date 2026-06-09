@@ -436,6 +436,22 @@ var (
 		variant:   enterpriseVariant,
 	}
 
+	ComponentGatewayAPIAIGatewayController = Component{
+		Version:   "v0.7.0",
+		Image:     "envoy-ai-gateway-controller",
+		Registry:  "",
+		imagePath: "",
+		variant:   enterpriseVariant,
+	}
+
+	ComponentGatewayAPIAIExtProc = Component{
+		Version:   "v0.7.0",
+		Image:     "envoy-ai-gateway-extproc",
+		Registry:  "",
+		imagePath: "",
+		variant:   enterpriseVariant,
+	}
+
 	ComponentIstioPilot = Component{
 		Version:  "release-calient-v3.23",
 		Image:    "istio-pilot",
@@ -524,6 +540,8 @@ var (
 		ComponentGatewayAPIEnvoyGateway,
 		ComponentGatewayAPIEnvoyProxy,
 		ComponentGatewayAPIEnvoyRatelimit,
+		ComponentGatewayAPIAIGatewayController,
+		ComponentGatewayAPIAIExtProc,
 		ComponentIstioPilot,
 		ComponentIstioInstallCNI,
 		ComponentIstioZTunnel,

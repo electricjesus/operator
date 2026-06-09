@@ -171,6 +171,12 @@ components:
   gateway-api-envoy-ratelimit:
     image: envoy-ratelimit
     version: release-calient-v3.23
+  gateway-api-aigateway-controller:
+    image: envoy-ai-gateway-controller
+    version: v0.7.0
+  gateway-api-aigateway-extproc:
+    image: envoy-ai-gateway-extproc
+    version: v0.7.0
   istio-pilot:
     image: istio-pilot
     version: release-calient-v3.23

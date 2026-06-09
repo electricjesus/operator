@@ -489,6 +489,24 @@ var (
 		variant:   enterpriseVariant,
 	}
 {{- end }}
+{{ with index .Components "gateway-api-aigateway-controller" }}
+	ComponentGatewayAPIAIGatewayController = Component{
+		Version:   "{{ .Version }}",
+		Image:     "{{ .Image }}",
+		Registry:  "{{ .Registry }}",
+		imagePath: "{{ .ImagePath }}",
+		variant:   enterpriseVariant,
+	}
+{{- end }}
+{{ with index .Components "gateway-api-aigateway-extproc" }}
+	ComponentGatewayAPIAIExtProc = Component{
+		Version:   "{{ .Version }}",
+		Image:     "{{ .Image }}",
+		Registry:  "{{ .Registry }}",
+		imagePath: "{{ .ImagePath }}",
+		variant:   enterpriseVariant,
+	}
+{{- end }}
 {{ with index .Components "istio-pilot" }}
 	ComponentIstioPilot = Component{
 		Version:  "{{ .Version }}",
@@ -583,6 +601,8 @@ var (
 		ComponentGatewayAPIEnvoyGateway,
 		ComponentGatewayAPIEnvoyProxy,
 		ComponentGatewayAPIEnvoyRatelimit,
+		ComponentGatewayAPIAIGatewayController,
+		ComponentGatewayAPIAIExtProc,
 		ComponentIstioPilot,
 		ComponentIstioInstallCNI,
 		ComponentIstioZTunnel,
